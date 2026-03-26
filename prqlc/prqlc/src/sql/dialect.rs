@@ -451,7 +451,9 @@ impl DialectHandler for RedshiftDialect {
         &self,
         elements: Vec<sqlparser::ast::Expr>,
     ) -> crate::Result<sqlparser::ast::Expr> {
-        use sqlparser::ast::{Function, FunctionArg, FunctionArgExpr, FunctionArguments, ObjectName};
+        use sqlparser::ast::{
+            Function, FunctionArg, FunctionArgExpr, FunctionArguments, ObjectName,
+        };
 
         Ok(sqlparser::ast::Expr::Function(Function {
             name: ObjectName::from(vec![sqlparser::ast::Ident::new("ARRAY")]),
@@ -732,7 +734,9 @@ impl DialectHandler for SnowflakeDialect {
         &self,
         elements: Vec<sqlparser::ast::Expr>,
     ) -> crate::Result<sqlparser::ast::Expr> {
-        use sqlparser::ast::{Function, FunctionArg, FunctionArgExpr, FunctionArguments, ObjectName};
+        use sqlparser::ast::{
+            Function, FunctionArg, FunctionArgExpr, FunctionArguments, ObjectName,
+        };
 
         Ok(sqlparser::ast::Expr::Function(Function {
             name: ObjectName::from(vec![sqlparser::ast::Ident::new("ARRAY_CONSTRUCT")]),
@@ -812,13 +816,12 @@ mod tests {
 
     fn compile_with(prql: &str, dialect: Dialect) -> String {
         use std::str::FromStr;
-        let target = crate::Target::from_str(&format!("sql.{}", dialect.to_string().to_lowercase()))
-            .unwrap();
+        let target =
+            crate::Target::from_str(&format!("sql.{}", dialect.to_string().to_lowercase()))
+                .unwrap();
         crate::compile(
             prql,
-            &crate::Options::default()
-                .no_signature()
-                .with_target(target),
+            &crate::Options::default().no_signature().with_target(target),
         )
         .unwrap()
     }
