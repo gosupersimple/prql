@@ -358,6 +358,17 @@ impl DialectHandler for PostgresDialect {
     fn prefers_subquery_parentheses_shorthand(&self) -> bool {
         true
     }
+
+    // https://www.postgresql.org/docs/current/arrays.html
+    fn translate_sql_array(
+        &self,
+        elements: Vec<sqlparser::ast::Expr>,
+    ) -> crate::Result<sqlparser::ast::Expr> {
+        Ok(sqlparser::ast::Expr::Array(sqlparser::ast::Array {
+            elem: elements,
+            named: true,
+        }))
+    }
 }
 
 impl DialectHandler for RedshiftDialect {
@@ -432,6 +443,33 @@ impl DialectHandler for RedshiftDialect {
     // for more than two elements: https://docs.aws.amazon.com/redshift/latest/dg/r_CONCAT.html
     fn has_concat_function(&self) -> bool {
         false
+    }
+
+    // Redshift uses ARRAY(elem1, elem2, ...) function syntax
+    // https://docs.aws.amazon.com/redshift/latest/dg/r_array_function.html
+    fn translate_sql_array(
+        &self,
+        elements: Vec<sqlparser::ast::Expr>,
+    ) -> crate::Result<sqlparser::ast::Expr> {
+        use sqlparser::ast::{Function, FunctionArg, FunctionArgExpr, FunctionArguments, ObjectName};
+
+        Ok(sqlparser::ast::Expr::Function(Function {
+            name: ObjectName::from(vec![sqlparser::ast::Ident::new("ARRAY")]),
+            args: FunctionArguments::List(sqlparser::ast::FunctionArgumentList {
+                args: elements
+                    .into_iter()
+                    .map(|e| FunctionArg::Unnamed(FunctionArgExpr::Expr(e)))
+                    .collect(),
+                duplicate_treatment: None,
+                clauses: vec![],
+            }),
+            filter: None,
+            null_treatment: None,
+            over: None,
+            within_group: vec![],
+            parameters: FunctionArguments::None,
+            uses_odbc_syntax: false,
+        }))
     }
 }
 
@@ -687,6 +725,33 @@ impl DialectHandler for SnowflakeDialect {
         // ROW_NUMBER() requires ORDER BY in window specification
         true
     }
+
+    // Snowflake uses ARRAY_CONSTRUCT function for array literals
+    // https://docs.snowflake.com/en/sql-reference/functions/array_construct
+    fn translate_sql_array(
+        &self,
+        elements: Vec<sqlparser::ast::Expr>,
+    ) -> crate::Result<sqlparser::ast::Expr> {
+        use sqlparser::ast::{Function, FunctionArg, FunctionArgExpr, FunctionArguments, ObjectName};
+
+        Ok(sqlparser::ast::Expr::Function(Function {
+            name: ObjectName::from(vec![sqlparser::ast::Ident::new("ARRAY_CONSTRUCT")]),
+            args: FunctionArguments::List(sqlparser::ast::FunctionArgumentList {
+                args: elements
+                    .into_iter()
+                    .map(|e| FunctionArg::Unnamed(FunctionArgExpr::Expr(e)))
+                    .collect(),
+                duplicate_treatment: None,
+                clauses: vec![],
+            }),
+            filter: None,
+            null_treatment: None,
+            over: None,
+            within_group: vec![],
+            parameters: FunctionArguments::None,
+            uses_odbc_syntax: false,
+        }))
+    }
 }
 
 impl DialectHandler for DuckDbDialect {
@@ -744,6 +809,85 @@ mod tests {
     use insta::{assert_debug_snapshot, assert_snapshot};
 
     use super::{chrono_item_to_strftime, BigQueryDialect, Dialect, DialectHandler};
+
+    fn compile_with(prql: &str, dialect: Dialect) -> String {
+        use std::str::FromStr;
+        let target = crate::Target::from_str(&format!("sql.{}", dialect.to_string().to_lowercase()))
+            .unwrap();
+        crate::compile(
+            prql,
+            &crate::Options::default()
+                .no_signature()
+                .with_target(target),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_array_literal_postgres() {
+        assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::Postgres), @r"
+        SELECT
+          *,
+          ARRAY [1, 2, 3] AS x
+        FROM
+          t
+        ");
+    }
+
+    #[test]
+    fn test_array_literal_redshift() {
+        assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::Redshift), @r"
+        SELECT
+          *,
+          ARRAY(1, 2, 3) AS x
+        FROM
+          t
+        ");
+    }
+
+    #[test]
+    fn test_array_literal_duckdb() {
+        assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::DuckDb), @r"
+        SELECT
+          *,
+          [1, 2, 3] AS x
+        FROM
+          t
+        ");
+    }
+
+    #[test]
+    fn test_array_literal_bigquery() {
+        assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::BigQuery), @r"
+        SELECT
+          *,
+          [1, 2, 3] AS x
+        FROM
+          t
+        ");
+    }
+
+    #[test]
+    fn test_array_literal_clickhouse() {
+        assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::ClickHouse), @r"
+        SELECT
+          *,
+          [1, 2, 3] AS x
+        FROM
+          t
+        ");
+    }
+
+    #[test]
+    fn test_array_literal_snowflake() {
+        assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::Snowflake), @r#"
+        SELECT
+          *,
+          ARRAY_CONSTRUCT(1, 2, 3) AS "x"
+        FROM
+          "t"
+        "#);
+    }
 
     #[test]
     fn test_dialect_from_str() {
