@@ -881,7 +881,9 @@ mod tests {
         assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::Postgres), @r"
         SELECT
           *,
-          ARRAY [1, 2, 3] AS x
+          ARRAY [ 1,
+          2,
+          3 ] AS x
         FROM
           t
         ");
@@ -903,7 +905,9 @@ mod tests {
         assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::DuckDb), @r"
         SELECT
           *,
-          [1, 2, 3] AS x
+          [ 1,
+          2,
+          3 ] AS x
         FROM
           t
         ");
@@ -914,7 +918,9 @@ mod tests {
         assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::BigQuery), @r"
         SELECT
           *,
-          [1, 2, 3] AS x
+          [ 1,
+          2,
+          3 ] AS x
         FROM
           t
         ");
@@ -925,7 +931,9 @@ mod tests {
         assert_snapshot!(compile_with("from t | derive x = [1, 2, 3]", Dialect::ClickHouse), @r"
         SELECT
           *,
-          [1, 2, 3] AS x
+          [ 1,
+          2,
+          3 ] AS x
         FROM
           t
         ");
