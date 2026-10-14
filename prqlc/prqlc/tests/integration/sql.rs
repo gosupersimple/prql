@@ -2560,17 +2560,25 @@ fn test_take_mssql() {
 
     from tracks
     take 3..5
-    "#).unwrap()), @"
+    "#).unwrap()), @r"
+    WITH
+    table_0 AS (
+      SELECT
+        *,
+        ROW_NUMBER() OVER (
+          ORDER BY
+            (
+              SELECT
+                NULL)) AS _expr_0
+      FROM
+        tracks
+    )
     SELECT
       *
     FROM
-      tracks
-    ORDER BY
-      (
-        SELECT
-          NULL) OFFSET 2 ROWS
-    FETCH FIRST
-      3 ROWS ONLY
+      table_0
+    WHERE
+      _expr_0 BETWEEN 3 AND 5
     ");
 
     assert_snapshot!((compile(r#"
@@ -2580,15 +2588,9 @@ fn test_take_mssql() {
     take ..5
     "#).unwrap()), @"
     SELECT
-      *
+      TOP (5) *
     FROM
       tracks
-    ORDER BY
-      (
-        SELECT
-          NULL) OFFSET 0 ROWS
-    FETCH FIRST
-      5 ROWS ONLY
     ");
 
     assert_snapshot!((compile(r#"
@@ -2596,11 +2598,25 @@ fn test_take_mssql() {
 
     from tracks
     take 3..
-    "#).unwrap()), @"
+    "#).unwrap()), @r"
+    WITH
+    table_0 AS (
+      SELECT
+        *,
+        ROW_NUMBER() OVER (
+          ORDER BY
+            (
+              SELECT
+                NULL)) AS _expr_0
+      FROM
+        tracks
+    )
     SELECT
       *
     FROM
-      tracks OFFSET 2 ROWS
+      table_0
+    WHERE
+      _expr_0 >= 3
     ");
 }
 
@@ -2671,64 +2687,345 @@ fn test_take_oracle() {
 #[test]
 fn test_mssql_distinct_fetch() {
     // Issue #5628: MSSQL requires ORDER BY items to appear in SELECT list when DISTINCT is used.
-    // Using (SELECT NULL) for ORDER BY with DISTINCT is invalid in MSSQL.
+    // Using (SELECT NULL) for ORDER BY with DISTINCT is invalid in MSSQL. A take with an offset
+    // filters by row number and a take without one is a TOP, so neither needs an ORDER BY.
 
     // Case 1: UnnamedExpr - simple column reference
     assert_snapshot!((compile(r#"
     prql target:sql.mssql
 
     from t
-    take 100
+    take 11..110
     group {this.`District`} (take 1)
     select {this.`District`}
     "#).unwrap()), @r#"
+    WITH
+    table_0 AS (
+      SELECT
+        "District",
+        ROW_NUMBER() OVER (
+          ORDER BY
+            (
+              SELECT
+                NULL)) AS _expr_0
+      FROM
+        t
+    )
     SELECT DISTINCT
       "District"
     FROM
-      t
-    ORDER BY
-      "District" OFFSET 0 ROWS
-    FETCH FIRST
-      100 ROWS ONLY
+      table_0
+    WHERE
+      _expr_0 BETWEEN 11 AND 110
     "#);
 
-    // Case 2: ExprWithAlias - uses the alias for ORDER BY
+    // Case 2: ExprWithAlias
     assert_snapshot!((compile(r#"
     prql target:sql.mssql
 
     from t
-    take 100
+    take 11..110
     group {d = this.`District`} (take 1)
     select {d}
     "#).unwrap()), @r#"
+    WITH
+    table_0 AS (
+      SELECT
+        "District",
+        ROW_NUMBER() OVER (
+          ORDER BY
+            (
+              SELECT
+                NULL)) AS _expr_0
+      FROM
+        t
+    )
     SELECT DISTINCT
       "District" AS d
     FROM
-      t
-    ORDER BY
-      d OFFSET 0 ROWS
-    FETCH FIRST
-      100 ROWS ONLY
+      table_0
+    WHERE
+      _expr_0 BETWEEN 11 AND 110
     "#);
 
-    // Case 3: Multiple columns - uses first column for ORDER BY
+    // Case 3: Multiple columns
     assert_snapshot!((compile(r#"
     prql target:sql.mssql
 
     from t
-    take 100
+    take 11..110
     group {this.`A`, this.`B`} (take 1)
     select {this.`A`, this.`B`}
     "#).unwrap()), @r#"
+    WITH
+    table_0 AS (
+      SELECT
+        "A",
+        "B",
+        ROW_NUMBER() OVER (
+          ORDER BY
+            (
+              SELECT
+                NULL)) AS _expr_0
+      FROM
+        t
+    )
     SELECT DISTINCT
       "A",
       "B"
     FROM
-      t
+      table_0
+    WHERE
+      _expr_0 BETWEEN 11 AND 110
+    "#);
+}
+
+#[test]
+fn test_mssql_take() {
+    // A take without an offset is a TOP, which needs no ORDER BY. A take with an offset filters
+    // by row number, as Azure Synapse dedicated SQL pools don't support OFFSET.
+    assert_snapshot!((compile(r#"
+    prql target:sql.mssql
+
+    from tracks
+    sort {-bytes}
+    take 10
+    "#).unwrap()), @r"
+    SELECT
+      TOP (10) *
+    FROM
+      tracks
     ORDER BY
-      "A" OFFSET 0 ROWS
-    FETCH FIRST
-      100 ROWS ONLY
+      bytes DESC
+    ");
+
+    assert_snapshot!((compile(r#"
+    prql target:sql.mssql
+
+    from t
+    group {this.`District`} (take 1)
+    take 100
+    "#).unwrap()), @r#"
+    WITH
+    table_0 AS (
+      SELECT
+        *,
+        ROW_NUMBER() OVER (
+          PARTITION BY
+            "District"
+          ORDER BY
+            (
+              SELECT
+                NULL)
+        ) AS _expr_0
+      FROM
+        t
+    )
+    SELECT
+      TOP (100) *
+    FROM
+      table_0
+    WHERE
+      _expr_0 <= 1
+    "#);
+
+    assert_snapshot!((compile(r#"
+    prql target:sql.mssql
+
+    from tracks
+    select {name, bytes}
+    sort {-bytes}
+    take 11..20
+    "#).unwrap()), @r"
+    WITH
+    table_0 AS (
+      SELECT
+        name,
+        bytes,
+        ROW_NUMBER() OVER (
+          ORDER BY
+            bytes DESC) AS _expr_0
+      FROM
+        tracks
+    )
+    SELECT
+      name,
+      bytes
+    FROM
+      table_0
+    WHERE
+      _expr_0 BETWEEN 11 AND 20
+    ORDER BY
+      bytes DESC
+    ");
+}
+
+#[test]
+fn test_mssql_booleans() {
+    // MSSQL has no boolean type: conditions used as values become bits, and bits used as
+    // conditions are compared to 1.
+    assert_snapshot!((compile(r#"
+    prql target:sql.mssql
+
+    from t
+    derive {
+      is_big = amount > 100,
+      is_set = amount != null,
+      yes = true,
+      both = (amount > 100 && flag),
+      fallback = (amount > 100) ?? false,
+      label = case [flag => "on", amount > 100 => "big", true => "other"],
+    }
+    filter (flag || is_big)
+    filter (yes == true)
+    "#).unwrap()), @r#"
+    WITH
+    table_0 AS (
+      SELECT
+        *,
+        CASE
+          WHEN amount > 100 THEN CAST(1 AS BIT)
+          WHEN NOT amount > 100 THEN CAST(0 AS BIT)
+          ELSE NULL
+        END AS is_big,
+        CASE
+          WHEN amount IS NOT NULL THEN CAST(1 AS BIT)
+          ELSE CAST(0 AS BIT)
+        END AS is_set,
+        CAST(1 AS BIT) AS yes,
+        CASE
+          WHEN amount > 100
+          AND flag = 1 THEN CAST(1 AS BIT)
+          WHEN NOT (
+            amount > 100
+            AND flag = 1
+          ) THEN CAST(0 AS BIT)
+          ELSE NULL
+        END AS "both",
+        COALESCE(
+          CASE
+            WHEN amount > 100 THEN CAST(1 AS BIT)
+            WHEN NOT amount > 100 THEN CAST(0 AS BIT)
+            ELSE NULL
+          END,
+          CAST(0 AS BIT)
+        ) AS fallback,
+        CASE
+          WHEN flag = 1 THEN 'on'
+          WHEN amount > 100 THEN 'big'
+          ELSE 'other'
+        END AS "label"
+      FROM
+        t
+    )
+    SELECT
+      *
+    FROM
+      table_0
+    WHERE
+      (
+        flag = 1
+        OR is_big = 1
+      )
+      AND yes = CAST(1 AS BIT)
+    "#);
+
+    assert_snapshot!((compile(r#"
+    prql target:sql.mssql
+
+    from t
+    join side:left u (true)
+    filter (t.id | in [])
+    filter !t.flag
+    "#).unwrap()), @r"
+    SELECT
+      t.*,
+      u.*
+    FROM
+      t
+      LEFT OUTER JOIN u ON 1 = 1
+    WHERE
+      1 = 0
+      AND NOT t.flag = 1
+    ");
+}
+
+#[test]
+fn test_mssql_sort_by_constant() {
+    // MSSQL rejects constants in ORDER BY, also in window functions.
+    assert_snapshot!((compile(r#"
+    prql target:sql.mssql
+
+    from t
+    group {k} (sort null | take 1)
+    "#).unwrap()), @r"
+    WITH
+    table_0 AS (
+      SELECT
+        *,
+        ROW_NUMBER() OVER (
+          PARTITION BY
+            k
+          ORDER BY
+            (
+              SELECT
+                NULL)
+        ) AS _expr_0
+      FROM
+        t
+    )
+    SELECT
+      *
+    FROM
+      table_0
+    WHERE
+      _expr_0 <= 1
+    ");
+}
+
+#[test]
+fn test_mssql_literals() {
+    assert_snapshot!((compile(r#"
+    prql target:sql.mssql
+
+    from t
+    derive {
+      d = @2024-01-01,
+      ts = @2024-01-01T10:00:00,
+      tz = @2024-01-01T10:00:00Z,
+      names = ["a", "b"],
+      numbers = [1, 2],
+      mixed = [name, "b"],
+    }
+    "#).unwrap()), @r#"
+    SELECT
+      *,
+      CAST('2024-01-01' AS DATE) AS d,
+      CAST('2024-01-01T10:00:00' AS DATETIME2) AS ts,
+      CAST('2024-01-01T10:00:00Z' AS DATETIMEOFFSET) AS tz,
+      '["a","b"]' AS names,
+      '[1,2]' AS numbers,
+      CONCAT(
+        '[',
+        CONCAT(
+          NCHAR(34),
+          REPLACE (
+            REPLACE (
+              CAST(name AS NVARCHAR(MAX)),
+              NCHAR(92),
+              NCHAR(92) + NCHAR(92)
+            ),
+            NCHAR(34),
+            NCHAR(92) + NCHAR(34)
+          ),
+          NCHAR(34)
+        ),
+        ',',
+        '"b"',
+        ']'
+      ) AS mixed
+    FROM
+      t
     "#);
 }
 
@@ -3922,16 +4219,10 @@ fn test_targets() {
 
     assert_snapshot!((compile(query).unwrap()), @r#"
     SELECT
-      "FirstName",
+      TOP (3) "FirstName",
       "last name"
     FROM
       "Employees"
-    ORDER BY
-      (
-        SELECT
-          NULL) OFFSET 0 ROWS
-    FETCH FIRST
-      3 ROWS ONLY
     "#);
 
     // MySQL
@@ -5176,15 +5467,9 @@ fn test_header() {
     take 5
     "#).as_str()).unwrap(),@"
     SELECT
-      *
+      TOP (5) *
     FROM
       a
-    ORDER BY
-      (
-        SELECT
-          NULL) OFFSET 0 ROWS
-    FETCH FIRST
-      5 ROWS ONLY
     ");
 }
 #[test]

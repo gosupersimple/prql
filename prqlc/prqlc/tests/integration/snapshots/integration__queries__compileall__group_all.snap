@@ -5,22 +5,17 @@ input_file: prqlc/prqlc/tests/integration/queries/group_all.prql
 ---
 --- generic
 +++ mssql
-@@ -1,19 +1,23 @@
+@@ -1,19 +1,17 @@
  WITH
  table_0 AS (
    SELECT
-     album_id,
+-    album_id,
++    TOP (10) album_id,
      title
    FROM
      albums AS a
 -  LIMIT
 -    10
-+  ORDER BY
-+    (
-+      SELECT
-+        NULL) OFFSET 0 ROWS
-+  FETCH FIRST
-+    10 ROWS ONLY
  )
  SELECT
    table_0.album_id,

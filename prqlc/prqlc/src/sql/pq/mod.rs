@@ -10,6 +10,7 @@
 
 mod anchor;
 pub mod ast;
+mod boolean;
 pub mod context;
 mod gen_query;
 mod positional_mapping;

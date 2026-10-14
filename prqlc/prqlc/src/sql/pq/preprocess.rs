@@ -32,6 +32,13 @@ pub(in crate::sql) fn preprocess(
         .and_then(|p| except(p, ctx))
         .and_then(|p| intersect(p, ctx))
         .map(reorder)
+        .map(|p| {
+            if ctx.dialect.has_boolean_type() {
+                p
+            } else {
+                super::boolean::separate_pipeline_conditions(p)
+            }
+        })
         .inspect(|p| {
             debug::log_entry(|| debug::DebugEntryKind::ReprPqEarly(p.clone()));
         })
@@ -133,8 +140,28 @@ pub(in crate::sql) fn distinct(
     let mut res = Vec::new();
     for transform in pipeline.clone() {
         match transform {
-            Super(Take(rq::Take { ref partition, .. })) if partition.is_empty() => {
-                res.push(transform);
+            Super(Take(rq::Take {
+                ref partition,
+                ref range,
+                ref sort,
+            })) if partition.is_empty() => {
+                let has_offset = range
+                    .start
+                    .clone()
+                    .map(as_int)
+                    .is_some_and(|start| start != Ok(1));
+
+                if has_offset && !ctx.dialect.supports_offset() {
+                    // convert `take start..end` into a filter by row number, like a partitioned take
+                    res.extend(create_filter_by_row_number(
+                        range.clone(),
+                        sort.clone(),
+                        vec![],
+                        ctx,
+                    ));
+                } else {
+                    res.push(transform);
+                }
             }
 
             Super(Take(rq::Take {

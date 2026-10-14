@@ -16,7 +16,7 @@ use super::{keywords, Context};
 use crate::ir::generic::{ColumnSort, SortDirection, WindowFrame, WindowKind};
 use crate::ir::pl::{self, Ident, Literal};
 use crate::ir::rq;
-use crate::sql::dialect::{IdentQuotingStyle, IntervalQuotingStyle};
+use crate::sql::dialect::{IdentQuotingStyle, IntervalQuotingStyle, MsSqlDialect};
 use crate::sql::pq::context::ColumnDecl;
 use crate::utils::{valid_ident, OrMap};
 use crate::{Error, Result, Span, WithErrorInfo};
@@ -190,7 +190,7 @@ fn process_array_in(
                 // We avoid producing `in ()` expressions since they are not syntactically valid
                 // in some engines like PostgreSQL or MySQL.
                 // We can instead optimize this to a condition that is always false
-                Ok(sql_ast::Expr::Value(Value::Boolean(false).into()))
+                Ok(false_condition(ctx))
             } else {
                 Ok(sql_ast::Expr::InList {
                     expr: Box::new(translate_predicate_operand(col_expr.clone(), ctx)?.into_ast()),
@@ -224,7 +224,7 @@ fn process_date_trunc(
         ..
     }, col_expr] = args
     {
-        use crate::sql::dialect::{BigQueryDialect, MsSqlDialect};
+        use crate::sql::dialect::BigQueryDialect;
 
         if ctx.dialect.is::<BigQueryDialect>() {
             // BigQuery: DATE_TRUNC(col, DAY) — unit is an unquoted uppercase keyword
@@ -611,8 +611,56 @@ fn translate_datetime_literal(
 ) -> sql_ast::Expr {
     if ctx.dialect.is::<crate::sql::dialect::SQLiteDialect>() {
         translate_datetime_literal_with_sqlite_function(data_type, value)
+    } else if ctx.dialect.is::<MsSqlDialect>() {
+        translate_datetime_literal_with_cast(data_type, value)
     } else {
         translate_datetime_literal_with_typed_string(data_type, value)
+    }
+}
+
+/// T-SQL has no typed literals (`DATE '2020-01-01'`), so the string is cast instead.
+fn translate_datetime_literal_with_cast(
+    data_type: sql_ast::DataType,
+    value: String,
+) -> sql_ast::Expr {
+    let data_type = match data_type {
+        sql_ast::DataType::Timestamp(..) => {
+            let has_timezone = Regex::new(r"(Z|[+-]\d{2}(:?\d{2})?)$")
+                .unwrap()
+                .is_match(&value);
+            let name = if has_timezone {
+                "DATETIMEOFFSET"
+            } else {
+                "DATETIME2"
+            };
+            sql_ast::DataType::Custom(
+                sql_ast::ObjectName::from(vec![sql_ast::Ident::new(name)]),
+                vec![],
+            )
+        }
+        data_type => data_type,
+    };
+
+    sql_ast::Expr::Cast {
+        kind: sql_ast::CastKind::Cast,
+        expr: Box::new(sql_ast::Expr::Value(
+            Value::SingleQuotedString(value).into(),
+        )),
+        data_type,
+        format: None,
+    }
+}
+
+/// A condition that is always false. Dialects without a boolean type have no `false` literal.
+pub(super) fn false_condition(ctx: &Context) -> sql_ast::Expr {
+    if ctx.dialect.has_boolean_type() {
+        sql_ast::Expr::Value(Value::Boolean(false).into())
+    } else {
+        sql_ast::Expr::BinaryOp {
+            left: Box::new(expr_of_i64(1)),
+            op: BinaryOperator::Eq,
+            right: Box::new(expr_of_i64(0)),
+        }
     }
 }
 
@@ -955,9 +1003,15 @@ fn translate_windowed(
 
     // Some dialects (e.g., Snowflake) require ORDER BY for window functions
     // When no ORDER BY is specified, use ORDER BY 1 as a fallback
+    // (MSSQL rejects integer indices there, so it orders by (SELECT NULL) instead)
     if order_by.is_empty() && ctx.dialect.requires_order_by_in_window_function() {
+        let expr = if ctx.dialect.is::<MsSqlDialect>() {
+            sql_ast::Expr::Value(Value::Placeholder("(SELECT NULL)".to_string()).into())
+        } else {
+            sql_ast::Expr::Value(Value::Number("1".to_string(), false).into())
+        };
         order_by.push(OrderByExpr {
-            expr: sql_ast::Expr::Value(Value::Number("1".to_string(), false).into()),
+            expr,
             options: sqlparser::ast::OrderByOptions {
                 sort: None,
                 nulls_first: None,
@@ -1021,8 +1075,18 @@ pub(super) fn translate_column_sort(
     sort: &ColumnSort<rq::CId>,
     ctx: &mut Context,
 ) -> Result<OrderByExpr> {
+    let mut expr = translate_cid(sort.column, ctx)?.into_ast();
+
+    // MSSQL rejects constants such as NULL in ORDER BY, but accepts a constant subquery,
+    // which keeps the order arbitrary.
+    if ctx.dialect.is::<MsSqlDialect>()
+        && matches!(&expr, sql_ast::Expr::Value(v) if !matches!(v.value, Value::Placeholder(_)))
+    {
+        expr = sql_ast::Expr::Value(Value::Placeholder("(SELECT NULL)".to_string()).into());
+    }
+
     Ok(OrderByExpr {
-        expr: translate_cid(sort.column, ctx)?.into_ast(),
+        expr,
         options: sqlparser::ast::OrderByOptions {
             sort: if matches!(sort.direction, SortDirection::Asc) {
                 None // default order is ASC, so there is no need to emit it

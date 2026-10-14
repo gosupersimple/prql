@@ -170,7 +170,7 @@ fn translate_select_pipeline(
     let ranges = takes.into_iter().map(|x| x.range).collect();
     let take = range_of_ranges(ranges)?;
     let offset = take.start.map(|s| s - 1).unwrap_or(0);
-    let limit = take.end.map(|e| e - offset);
+    let mut limit = take.end.map(|e| e - offset);
 
     let mut offset = if offset == 0 {
         None
@@ -198,6 +198,16 @@ fn translate_select_pipeline(
         })
         .transpose()?
         .unwrap_or_default();
+
+    // TOP limits rows without needing the ORDER BY and OFFSET 0 that FETCH requires.
+    let top = (ctx.dialect.use_top() && offset.is_none())
+        .then(|| limit.take())
+        .flatten()
+        .map(|l| sql_ast::Top {
+            with_ties: false,
+            percent: false,
+            quantity: Some(sql_ast::TopQuantity::Expr(expr_of_i64(l))),
+        });
 
     let (fetch, limit) = if ctx.dialect.use_fetch() {
         (limit.map(|l| fetch_of_i64(l, ctx)), None)
@@ -264,6 +274,7 @@ fn translate_select_pipeline(
         fetch,
         ..default_query(SetExpr::Select(Box::new(Select {
             distinct,
+            top,
             projection,
             from,
             selection: where_,
@@ -493,7 +504,7 @@ fn translate_relation_literal(data: RelationLiteral, ctx: &Context) -> Result<sq
 
         return Ok(default_query(sql_ast::SetExpr::Select(Box::new(Select {
             projection: nulls,
-            selection: Some(sql_ast::Expr::Value(sql_ast::Value::Boolean(false).into())),
+            selection: Some(false_condition(ctx)),
             ..default_select()
         }))));
     }

@@ -340,6 +340,23 @@ pub(super) trait DialectHandler: Any + Debug {
     fn requires_order_by_in_window_function(&self) -> bool {
         false
     }
+
+    /// Whether a `take` without an offset is expressed as `SELECT TOP (n)`.
+    fn use_top(&self) -> bool {
+        false
+    }
+
+    /// Whether the dialect can skip rows with OFFSET. Otherwise a `take` with an offset is
+    /// expressed as a filter by ROW_NUMBER().
+    fn supports_offset(&self) -> bool {
+        true
+    }
+
+    /// Whether the dialect lacks a boolean data type, so that conditions are only valid in
+    /// WHERE, ON, HAVING and CASE WHEN, and boolean values (bits) must be compared to 1 there.
+    fn has_boolean_type(&self) -> bool {
+        true
+    }
 }
 
 impl dyn DialectHandler {
@@ -548,6 +565,75 @@ impl DialectHandler for MsSqlDialect {
     // without a sort is a syntax error: https://stackoverflow.com/a/44919325
     fn fetch_requires_order_by(&self) -> bool {
         true
+    }
+
+    // TOP is also the only row limit in Azure Synapse dedicated SQL pools, which lack OFFSET / FETCH.
+    fn use_top(&self) -> bool {
+        true
+    }
+
+    // Azure Synapse dedicated SQL pools don't support OFFSET.
+    // https://learn.microsoft.com/en-us/azure/synapse-analytics/sql/overview-features#query-language
+    fn supports_offset(&self) -> bool {
+        false
+    }
+
+    // https://learn.microsoft.com/en-us/sql/t-sql/functions/ranking-functions-transact-sql
+    fn requires_order_by_in_window_function(&self) -> bool {
+        true
+    }
+
+    // https://learn.microsoft.com/en-us/sql/t-sql/data-types/bit-transact-sql
+    fn has_boolean_type(&self) -> bool {
+        false
+    }
+
+    // T-SQL has no arrays: they are JSON array strings, which OPENJSON and JSON_VALUE read.
+    // https://learn.microsoft.com/en-us/sql/relational-databases/json/json-data-sql-server
+    fn translate_sql_array(
+        &self,
+        elements: Vec<sqlparser::ast::Expr>,
+    ) -> crate::Result<sqlparser::ast::Expr> {
+        use sqlparser::ast::{Expr, Ident, Value};
+
+        let literal_json = |expr: &Expr| match expr {
+            Expr::Value(v) => match &v.value {
+                Value::SingleQuotedString(s) => {
+                    Some(serde_json::Value::from(s.as_str()).to_string())
+                }
+                Value::Number(n, _) => Some(n.clone()),
+                Value::Boolean(b) => Some(b.to_string()),
+                Value::Null => Some("null".to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        if let Some(items) = elements
+            .iter()
+            .map(literal_json)
+            .collect::<Option<Vec<_>>>()
+        {
+            let json = format!("[{}]", items.join(","));
+            return Ok(Expr::Value(Value::SingleQuotedString(json).into()));
+        }
+
+        // Elements that are not literals are serialized as JSON strings at runtime.
+        let items = elements
+            .iter()
+            .map(|e| match literal_json(e) {
+                Some(json) => Expr::Value(Value::SingleQuotedString(json).into()).to_string(),
+                // Backslashes and double quotes are spelled as NCHAR(92) and NCHAR(34) because the
+                // SQL formatter treats backslashes in string literals as escapes.
+                None => format!(
+                    "CONCAT(NCHAR(34), REPLACE(REPLACE(CAST({e} AS NVARCHAR(MAX)), NCHAR(92), NCHAR(92) + NCHAR(92)), NCHAR(34), NCHAR(92) + NCHAR(34)), NCHAR(34))"
+                ),
+            })
+            .collect::<Vec<_>>()
+            .join(", ',', ");
+        Ok(Expr::Identifier(Ident::new(format!(
+            "CONCAT('[', {items}, ']')"
+        ))))
     }
 
     // https://learn.microsoft.com/en-us/sql/t-sql/language-elements/set-operators-except-and-intersect-transact-sql?view=sql-server-ver16

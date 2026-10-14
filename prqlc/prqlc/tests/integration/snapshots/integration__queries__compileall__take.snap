@@ -5,15 +5,25 @@ input_file: prqlc/prqlc/tests/integration/queries/take.prql
 ---
 --- generic
 +++ mssql
-@@ -1,8 +1,8 @@
+@@ -1,8 +1,18 @@
++WITH
++table_0 AS (
++  SELECT
++    *,
++    ROW_NUMBER() OVER (
++      ORDER BY
++        track_id) AS _expr_0
++  FROM
++    tracks
++)
  SELECT
    *
  FROM
-   tracks
+-  tracks
++  table_0
++WHERE
++  _expr_0 BETWEEN 3 AND 5
  ORDER BY
--  track_id
+   track_id
 -LIMIT
 -  3 OFFSET 2
-+  track_id OFFSET 2 ROWS
-+FETCH FIRST
-+  3 ROWS ONLY

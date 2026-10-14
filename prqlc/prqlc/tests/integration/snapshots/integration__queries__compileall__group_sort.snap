@@ -5,23 +5,27 @@ input_file: prqlc/prqlc/tests/integration/queries/group_sort.prql
 ---
 --- generic
 +++ mssql
-@@ -9,21 +9,21 @@
+@@ -3,27 +3,25 @@
+   SELECT
+     COALESCE(SUM(track_id), 0) AS n1,
+     album_id + 1 AS _expr_0
+   FROM
+     tracks
+   GROUP BY
      album_id + 1
  ),
  table_1 AS (
    SELECT
-     _expr_0 AS d1,
+-    _expr_0 AS d1,
++    TOP (10) _expr_0 AS d1,
      n1,
      _expr_0
    FROM
      table_0
    ORDER BY
--    _expr_0
+     _expr_0
 -  LIMIT
 -    10
-+    _expr_0 OFFSET 0 ROWS
-+  FETCH FIRST
-+    10 ROWS ONLY
  )
  SELECT
    d1,

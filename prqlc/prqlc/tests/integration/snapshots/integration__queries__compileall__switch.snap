@@ -5,9 +5,12 @@ input_file: prqlc/prqlc/tests/integration/queries/switch.prql
 ---
 --- generic
 +++ mssql
-@@ -3,20 +3,20 @@
+@@ -1,22 +1,20 @@
+ WITH
+ table_0 AS (
    SELECT
-     CASE
+-    CASE
++    TOP (10) CASE
        WHEN composer IS NOT NULL THEN composer
        WHEN genre_id < 17 THEN 'no composer'
        ELSE 'unknown composer'
@@ -16,12 +19,9 @@ input_file: prqlc/prqlc/tests/integration/queries/switch.prql
    FROM
      tracks
    ORDER BY
--    milliseconds
+     milliseconds
 -  LIMIT
 -    10
-+    milliseconds OFFSET 0 ROWS
-+  FETCH FIRST
-+    10 ROWS ONLY
  )
  SELECT
    display

@@ -8,7 +8,7 @@ use super::super::{Context, Dialect};
 use super::anchor::{self, anchor_split};
 use super::ast::{self as pq, fold_sql_transform, PqMapper};
 use super::context::{AnchorContext, RIId, RelationAdapter, RelationStatus};
-use super::{postprocess, preprocess};
+use super::{boolean, postprocess, preprocess};
 use crate::debug;
 use crate::ir::rq::{self, RqFold};
 use crate::utils::BreakUp;
@@ -29,6 +29,12 @@ pub(in super::super) fn compile_query(
             .transpose()?
             .unwrap_or_default();
         maybe_dialect.unwrap_or_default()
+    };
+
+    let query = if dialect.handler().has_boolean_type() {
+        query
+    } else {
+        boolean::SeparateConditions.fold_query(query)?
     };
 
     let (anchor, main_relation) = AnchorContext::of(query);
