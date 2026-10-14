@@ -207,7 +207,8 @@ fn translate_select_pipeline(
 
     // If we have a FETCH we need to make sure that:
     // - we have an OFFSET (set to 0)
-    // - we have an ORDER BY (see https://stackoverflow.com/a/44919325)
+    // - we have an ORDER BY, where the dialect requires one alongside `FETCH`
+    //   (see https://stackoverflow.com/a/44919325)
     if fetch.is_some() {
         if offset.is_none() {
             let kind = ExprKind::Literal(Literal::Integer(0));
@@ -217,7 +218,7 @@ fn translate_select_pipeline(
                 rows: sqlparser::ast::OffsetRows::Rows,
             })
         }
-        if order_by.is_empty() {
+        if order_by.is_empty() && ctx.dialect.fetch_requires_order_by() {
             // When DISTINCT is used, MSSQL requires ORDER BY items to appear
             // in the SELECT list. Use the first column from the projection
             // instead of (SELECT NULL).
@@ -232,7 +233,7 @@ fn translate_select_pipeline(
             order_by.push(sql_ast::OrderByExpr {
                 expr: order_expr,
                 options: sqlparser::ast::OrderByOptions {
-                    asc: None,
+                    sort: None,
                     nulls_first: None,
                 },
                 with_fill: None,
@@ -347,8 +348,7 @@ fn translate_set_ops_pipeline(
 }
 
 fn translate_relation_expr(relation_expr: RelationExpr, ctx: &mut Context) -> Result<TableFactor> {
-    let alias = Some(&relation_expr.riid)
-        .and_then(|riid| ctx.anchor.relation_instances.get(riid))
+    let alias = (ctx.anchor.relation_instances.get(&relation_expr.riid))
         .and_then(|ri| ri.table_ref.name.clone());
 
     Ok(match relation_expr.kind {
@@ -391,15 +391,17 @@ fn translate_relation_expr(relation_expr: RelationExpr, ctx: &mut Context) -> Re
                 lateral: false,
                 subquery: Box::new(query),
                 alias,
+                sample: None,
             }
         }
     })
 }
 
 fn translate_table_alias(alias: Option<String>, ctx: &mut Context) -> Option<TableAlias> {
+    let explicit = ctx.dialect.table_alias_uses_as();
     alias
         .map(|ident| translate_ident_part(ident, ctx))
-        .map(simple_table_alias)
+        .map(|name| simple_table_alias(name, explicit))
 }
 
 fn translate_join(
@@ -447,40 +449,12 @@ fn translate_cte(cte: Cte, ctx: &mut Context) -> Result<(sql_ast::Cte, bool)> {
                 right: step,
             });
 
-            (inner_query, true)
-
             // RECURSIVE can only follow WITH directly.
             // Initial implementation assumed that it applies only to the first CTE.
             // This meant that it had to wrap any-non-first CTE into a *nested* WITH, so the inner
-            // WITH could be RECURSIVE.
-            // This is implementation of that, in case some dialect requires it.
-            // let inner_cte = sql_ast::Cte {
-            //     alias: simple_table_alias(cte_name.clone()),
-            //     query: Box::new(inner_query),
-            //     from: None,
-            // };
-            // let outer_query = sql_ast::Query {
-            //     with: Some(sql_ast::With {
-            //         recursive: true,
-            //         cte_tables: vec![inner_cte],
-            //     }),
-            //     ..default_query(sql_ast::SetExpr::Select(Box::new(sql_ast::Select {
-            //         projection: vec![SelectItem::Wildcard(
-            //             sql_ast::WildcardAdditionalOptions::default(),
-            //         )],
-            //         from: vec![TableWithJoins {
-            //             relation: TableFactor::Table {
-            //                 name: sql_ast::ObjectName(vec![cte_name.clone()]),
-            //                 alias: None,
-            //                 args: None,
-            //                 with_hints: Vec::new(),
-            //             },
-            //             joins: vec![],
-            //         }],
-            //         ..default_select()
-            //     })))
-            // };
-            // (outer_query, false)
+            // WITH could be RECURSIVE. If a dialect ever needs that, the removed implementation is
+            // in the history of this file (deleted in #6190).
+            (inner_query, true)
         }
     };
 
@@ -658,19 +632,25 @@ fn default_select() -> Select {
         qualify: None,
         value_table_mode: None,
         window_before_qualify: false,
-        connect_by: None,
+        connect_by: Vec::new(),
         prewhere: None,
         exclude: None,
+        optimizer_hints: Vec::new(),
+        select_modifiers: None,
         select_token: sqlparser::ast::helpers::attached_token::AttachedToken::empty(),
         flavor: sqlparser::ast::SelectFlavor::Standard,
     }
 }
 
-fn simple_table_alias(name: sql_ast::Ident) -> TableAlias {
+/// A table alias, e.g. `FROM t AS a`. `explicit` controls the `AS` keyword,
+/// which some dialects (Oracle) don't accept before a table alias — see
+/// `DialectHandler::table_alias_uses_as`.
+fn simple_table_alias(name: sql_ast::Ident, explicit: bool) -> TableAlias {
     TableAlias {
         name,
         columns: Vec::new(),
-        explicit: true,
+        explicit,
+        at: None,
     }
 }
 
@@ -679,6 +659,7 @@ fn cte_table_alias(name: sql_ast::Ident) -> TableAlias {
         name,
         columns: Vec::new(),
         explicit: false,
+        at: None,
     }
 }
 
@@ -712,9 +693,11 @@ fn query_to_set_expr(query: sql_ast::Query, context: &mut Context) -> Box<SetExp
                 relation: TableFactor::Derived {
                     lateral: false,
                     subquery: Box::new(query),
-                    alias: Some(simple_table_alias(sql_ast::Ident::new(
-                        context.anchor.table_name.gen(),
-                    ))),
+                    alias: Some(simple_table_alias(
+                        sql_ast::Ident::new(context.anchor.table_name.gen()),
+                        context.dialect.table_alias_uses_as(),
+                    )),
+                    sample: None,
                 },
                 joins: vec![],
             }],
@@ -746,6 +729,9 @@ fn first_expr_from_projection(projection: &[SelectItem]) -> Option<sql_ast::Expr
                 return Some(sql_ast::Expr::Identifier(alias.clone()));
             }
             SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => continue,
+            SelectItem::ExprWithAliases { .. } => {
+                unreachable!("prqlc does not construct SelectItem::ExprWithAliases")
+            }
         }
     }
     None
@@ -769,8 +755,9 @@ mod test {
 
         let sql_ast = crate::tests::compile(query).unwrap();
 
-        assert_snapshot!(sql_ast, @r"
-        WITH table_0 AS (
+        assert_snapshot!(sql_ast, @"
+        WITH
+        table_0 AS (
           SELECT
             title,
             AVG(salary) AS _expr_0
@@ -810,8 +797,9 @@ mod test {
 
         let sql_ast = crate::tests::compile(query).unwrap();
 
-        assert_snapshot!(sql_ast, @r"
-        WITH table_0 AS (
+        assert_snapshot!(sql_ast, @"
+        WITH
+        table_0 AS (
           SELECT
             *,
             RANK() OVER () AS global_rank
@@ -836,8 +824,9 @@ mod test {
         filter (average bar) > 3
         "#;
 
-        assert_snapshot!(crate::tests::compile(query).unwrap(), @r"
-        WITH table_0 AS (
+        assert_snapshot!(crate::tests::compile(query).unwrap(), @"
+        WITH
+        table_0 AS (
           SELECT
             *,
             AVG(bar) OVER () AS _expr_0
@@ -864,10 +853,11 @@ mod test {
         aggregate {c=count this}
         "#;
 
-        assert_snapshot!(crate::tests::compile(query).unwrap(), @r"
-        WITH table_0 AS (
-          SELECT
-            DISTINCT ON (id, name) *
+        assert_snapshot!(crate::tests::compile(query).unwrap(), @"
+        WITH
+        table_0 AS (
+          SELECT DISTINCT
+            ON (id, name) *
           FROM
             t1
         )
@@ -894,5 +884,89 @@ mod test {
 
         let err = crate::tests::compile(query).unwrap_err();
         assert!(err.to_string().contains("not accessible in this context"));
+    }
+
+    #[test]
+    fn test_sort_both_branches_join_take() {
+        // A `sort` on both the left and the joined branch (both wrapped in CTEs
+        // by a preceding `group`), followed by `take`, must not leak the joined
+        // branch's sort column into the implicit ORDER BY synthesized for the
+        // LIMIT. The ORDER BY must reference the left CTE alias, not the joined
+        // branch's out-of-scope source table.
+        let query = r#"
+        from foo.bar
+        group {a} (aggregate {x = count c})
+        sort {a}
+        join side:left (
+          from foo.bar
+          group {a} (aggregate {y = count c})
+          sort {a}
+          derive {a_r = a}
+          select {a_r, y}
+        ) (this.a == that.a_r)
+        derive {g = a}
+        take 10
+        select {g, x, y}
+        "#;
+
+        assert_snapshot!(crate::tests::compile(query).unwrap(), @"
+        WITH
+        table_1 AS (
+          SELECT
+            COUNT(*) AS x,
+            a
+          FROM
+            foo.bar
+          GROUP BY
+            a
+        ),
+        table_3 AS (
+          SELECT
+            COUNT(*) AS y,
+            a
+          FROM
+            foo.bar
+          GROUP BY
+            a
+        ),
+        table_4 AS (
+          SELECT
+            a AS a_r,
+            y,
+            a
+          FROM
+            table_3
+        ),
+        table_0 AS (
+          SELECT
+            a_r,
+            y,
+            a
+          FROM
+            table_4
+        ),
+        table_2 AS (
+          SELECT
+            table_1.a AS g,
+            table_1.x,
+            table_0.y,
+            table_1.a
+          FROM
+            table_1
+            LEFT OUTER JOIN table_0 ON table_1.a = table_0.a_r
+          ORDER BY
+            table_1.a
+          LIMIT
+            10
+        )
+        SELECT
+          g,
+          x,
+          y
+        FROM
+          table_2
+        ORDER BY
+          g
+        ");
     }
 }

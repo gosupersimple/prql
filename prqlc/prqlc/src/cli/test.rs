@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 #[cfg(not(windows))] // Windows has slightly different output (e.g. `prqlc.exe`), so we exclude.
 #[test]
 fn help() {
-    assert_cmd_snapshot!(prqlc_command().arg("--help"), @r"
+    assert_cmd_snapshot!(prqlc_command().arg("--help"), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -24,7 +24,7 @@ fn help() {
       lex               Lex into Lexer Representation
       fmt               Parse & generate PRQL code back
       collect           Parse the whole project and collect it into a single PRQL source file
-      debug             Commands for meant for debugging, prone to change
+      debug             Commands meant for debugging, prone to change
       experimental      Experimental commands are prone to change
       compile           Parse, resolve, lower into RQ & compile to SQL
       watch             Watch a directory and compile .prql files to .sql files
@@ -42,7 +42,7 @@ fn help() {
     ");
 
     // without arguments
-    assert_cmd_snapshot!(prqlc_command(), @r"
+    assert_cmd_snapshot!(prqlc_command(), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -53,7 +53,7 @@ fn help() {
       lex               Lex into Lexer Representation
       fmt               Parse & generate PRQL code back
       collect           Parse the whole project and collect it into a single PRQL source file
-      debug             Commands for meant for debugging, prone to change
+      debug             Commands meant for debugging, prone to change
       experimental      Experimental commands are prone to change
       compile           Parse, resolve, lower into RQ & compile to SQL
       watch             Watch a directory and compile .prql files to .sql files
@@ -73,7 +73,7 @@ fn help() {
 
 #[test]
 fn get_targets() {
-    assert_cmd_snapshot!(prqlc_command().arg("list-targets"), @r"
+    assert_cmd_snapshot!(prqlc_command().arg("list-targets"), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -83,9 +83,9 @@ fn get_targets() {
     sql.clickhouse
     sql.duckdb
     sql.generic
-    sql.glaredb
     sql.mssql
     sql.mysql
+    sql.oracle
     sql.postgres
     sql.redshift
     sql.sqlite
@@ -99,7 +99,7 @@ fn get_targets() {
 fn compile() {
     assert_cmd_snapshot!(prqlc_command()
         .args(["compile", "--hide-signature-comment"])
-        .pass_stdin("from tracks"), @r"
+        .pass_stdin("from tracks"), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -115,7 +115,7 @@ fn compile() {
 #[cfg(not(windows))] // Windows has slightly different output (e.g. `prqlc.exe`), so we exclude.
 #[test]
 fn compile_help() {
-    assert_cmd_snapshot!(prqlc_command().args(["compile", "--help"]), @r"
+    assert_cmd_snapshot!(prqlc_command().args(["compile", "--help"]), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -193,11 +193,12 @@ let long_query = (
   take 20
 )
 from long_query
-  "#), @r"
+  "#), @"
     success: true
     exit_code: 0
     ----- stdout -----
-    WITH table_2 AS (
+    WITH
+    table_2 AS (
       SELECT
         title,
         COUNT(*) AS ct
@@ -213,7 +214,8 @@ from long_query
         ct
       LIMIT
         20
-    ), table_1 AS (
+    ),
+    table_1 AS (
       SELECT
         title,
         ct
@@ -225,7 +227,8 @@ from long_query
         ct
       LIMIT
         20
-    ), table_0 AS (
+    ),
+    table_0 AS (
       SELECT
         title,
         ct
@@ -237,7 +240,8 @@ from long_query
         ct
       LIMIT
         20
-    ), long_query AS (
+    ),
+    long_query AS (
       SELECT
         title,
         ct
@@ -277,16 +281,16 @@ fn compile_project() {
         "main",
     ]);
 
-    assert_cmd_snapshot!(cmd, @r"
+    assert_cmd_snapshot!(cmd, @"
     success: true
     exit_code: 0
     ----- stdout -----
-    WITH table_1 AS (
+    WITH
+    table_1 AS (
       SELECT
         120 AS artist_id,
         DATE '2023-05-18' AS last_listen
-      UNION
-      ALL
+      UNION ALL
       SELECT
         7 AS artist_id,
         DATE '2023-05-16' AS last_listen
@@ -331,16 +335,16 @@ fn compile_project() {
         project_path().to_str().unwrap(),
         "-",
         "favorite_artists",
-    ]), @r"
+    ]), @"
     success: true
     exit_code: 0
     ----- stdout -----
-    WITH table_0 AS (
+    WITH
+    table_0 AS (
       SELECT
         120 AS artist_id,
         DATE '2023-05-18' AS last_listen
-      UNION
-      ALL
+      UNION ALL
       SELECT
         7 AS artist_id,
         DATE '2023-05-16' AS last_listen
@@ -358,7 +362,7 @@ fn compile_project() {
 #[test]
 fn format() {
     // Test stdin formatting
-    assert_cmd_snapshot!(prqlc_command().args(["fmt"]).pass_stdin("from tracks | take 20"), @r"
+    assert_cmd_snapshot!(prqlc_command().args(["fmt"]).pass_stdin("from tracks | take 20"), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -434,29 +438,29 @@ fn debug() {
           name:
           - tracks
           - artist
-          target_id: 121
+          target_id: 8
           target_name: null
         - !Single
           name:
           - tracks
           - album
-          target_id: 122
+          target_id: 9
           target_name: null
         inputs:
-        - id: 119
+        - id: 7
           name: tracks
           table:
           - default_db
           - tracks
     nodes:
-    - id: 119
+    - id: 7
       kind: Ident
       span: 1:0-11
       ident: !Ident
       - default_db
       - tracks
-      parent: 124
-    - id: 121
+      parent: 11
+    - id: 8
       kind: Ident
       span: 1:22-28
       ident: !Ident
@@ -464,9 +468,9 @@ fn debug() {
       - tracks
       - artist
       targets:
-      - 119
-      parent: 123
-    - id: 122
+      - 7
+      parent: 10
+    - id: 9
       kind: Ident
       span: 1:30-35
       ident: !Ident
@@ -474,21 +478,21 @@ fn debug() {
       - tracks
       - album
       targets:
-      - 119
-      parent: 123
-    - id: 123
+      - 7
+      parent: 10
+    - id: 10
       kind: Tuple
       span: 1:21-36
       children:
-      - 121
-      - 122
-      parent: 124
-    - id: 124
+      - 8
+      - 9
+      parent: 11
+    - id: 11
       kind: 'TransformCall: Select'
       span: 1:14-36
       children:
-      - 119
-      - 123
+      - 7
+      - 10
     ast:
       name: Project
       stmts:
@@ -603,7 +607,7 @@ fn normalize_prqlc(cmd: &mut Command) -> &mut Command {
 
 #[test]
 fn compile_no_prql_files() {
-    assert_cmd_snapshot!(prqlc_command().args(["compile", "README.md"]), @r"
+    assert_cmd_snapshot!(prqlc_command().args(["compile", "README.md"]), @"
     success: false
     exit_code: 1
     ----- stdout -----
@@ -615,7 +619,7 @@ fn compile_no_prql_files() {
 
 #[test]
 fn lex() {
-    assert_cmd_snapshot!(prqlc_command().args(["lex"]).pass_stdin("from tracks"), @r"
+    assert_cmd_snapshot!(prqlc_command().args(["lex"]).pass_stdin("from tracks"), @"
     success: true
     exit_code: 0
     ----- stdout -----
@@ -670,6 +674,23 @@ fn lex() {
     "#);
 }
 
+/// `lsp` is off by default, and the subcommand exists either way — so before
+/// the fix a default build dispatched `prqlc lsp` into the IO commands, which
+/// have no `IoArgs` for it, and panicked on `unreachable!()`. It should report
+/// the missing feature instead.
+#[cfg(not(feature = "lsp"))]
+#[test]
+fn lsp_without_feature() {
+    assert_cmd_snapshot!(prqlc_command().args(["lsp"]), @"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    `lsp` requires `prqlc` to be built with the `lsp` feature
+    ");
+}
+
 #[cfg(feature = "lsp")]
 #[test]
 fn lsp() {
@@ -699,6 +720,113 @@ fn lsp() {
             init.len(), init,
             initialized.len(), initialized,
             ex1.len(), ex1))
+        , @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+    Content-Length: 78
+
+    {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true}}}
+    ----- stderr -----
+    starting PRQL LSP server
+    starting main loop
+    got msg: Notification(Notification { method: "exit", params: Null })
+    got notification: Notification { method: "exit", params: Null }
+    shutting down server
+    "###);
+}
+
+/// A non-`exit` notification must not terminate the server — only `exit`
+/// should. Before the fix, the loop returned on the first notification, so
+/// the `exit` notification below was never reached and never logged.
+#[cfg(feature = "lsp")]
+#[test]
+fn lsp_ignores_non_exit_notification() {
+    let init = serde_json::to_string(&lsp_server::Message::Request(lsp_server::Request {
+        method: "initialize".into(),
+        id: lsp_server::RequestId::from(1),
+        params: serde_json::json!({"capabilities": {}}),
+    }))
+    .unwrap();
+    let initialized = serde_json::to_string(&lsp_server::Message::Notification(
+        lsp_server::Notification {
+            method: "initialized".into(),
+            params: serde_json::json!({}),
+        },
+    ))
+    .unwrap();
+    let set_trace = serde_json::to_string(&lsp_server::Message::Notification(
+        lsp_server::Notification {
+            method: "$/setTrace".into(),
+            params: serde_json::json!({"value": "off"}),
+        },
+    ))
+    .unwrap();
+    let exit = serde_json::to_string(&lsp_server::Message::Notification(
+        lsp_server::Notification {
+            method: "exit".into(),
+            params: serde_json::Value::Null,
+        },
+    ))
+    .unwrap();
+
+    assert_cmd_snapshot!(prqlc_command().args(["lsp"])
+        .pass_stdin(format!("Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+            init.len(), init,
+            initialized.len(), initialized,
+            set_trace.len(), set_trace,
+            exit.len(), exit))
+        , @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+    Content-Length: 78
+
+    {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":true}}}
+    ----- stderr -----
+    starting PRQL LSP server
+    starting main loop
+    got msg: Notification(Notification { method: "$/setTrace", params: Object {"value": String("off")} })
+    got notification: Notification { method: "$/setTrace", params: Object {"value": String("off")} }
+    got msg: Notification(Notification { method: "exit", params: Null })
+    got notification: Notification { method: "exit", params: Null }
+    shutting down server
+    "###);
+}
+
+/// `initialize` params that our pinned `lsp-types` can't model — here, ones
+/// missing the required `capabilities` field — must not take the server down.
+/// Before the fix, they were deserialized into `InitializeParams` and
+/// `unwrap`ed, so the server panicked before the main loop even started.
+#[cfg(feature = "lsp")]
+#[test]
+fn lsp_unmodelled_initialize_params() {
+    let init = serde_json::to_string(&lsp_server::Message::Request(lsp_server::Request {
+        method: "initialize".into(),
+        id: lsp_server::RequestId::from(1),
+        params: serde_json::json!({}),
+    }))
+    .unwrap();
+    let initialized = serde_json::to_string(&lsp_server::Message::Notification(
+        lsp_server::Notification {
+            method: "initialized".into(),
+            params: serde_json::json!({}),
+        },
+    ))
+    .unwrap();
+    let exit = serde_json::to_string(&lsp_server::Message::Notification(
+        lsp_server::Notification {
+            method: "exit".into(),
+            params: serde_json::Value::Null,
+        },
+    ))
+    .unwrap();
+
+    assert_cmd_snapshot!(prqlc_command().args(["lsp"])
+        .pass_stdin(format!("Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+            init.len(), init,
+            initialized.len(), initialized,
+            exit.len(), exit))
         , @r###"
     success: true
     exit_code: 0

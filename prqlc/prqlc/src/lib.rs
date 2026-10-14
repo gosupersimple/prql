@@ -149,11 +149,6 @@ pub fn compiler_version() -> Version {
     static COMPILER_VERSION: OnceLock<Version> = OnceLock::new();
     COMPILER_VERSION
         .get_or_init(|| {
-            if let Ok(prql_version_override) = std::env::var("PRQL_VERSION_OVERRIDE") {
-                return Version::parse(&prql_version_override).unwrap_or_else(|e| {
-                    panic!("Could not parse PRQL version {prql_version_override}\n{e}")
-                });
-            }
             let git_version = env!("VERGEN_GIT_DESCRIBE");
             let cargo_version = env!("CARGO_PKG_VERSION");
             Version::parse(git_version)
@@ -347,7 +342,7 @@ impl Options {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, strum::EnumString)]
+#[derive(Debug, Clone, Serialize, Deserialize, strum::EnumString, strum::VariantNames)]
 #[strum(serialize_all = "snake_case")]
 #[non_exhaustive]
 pub enum DisplayOptions {
@@ -462,6 +457,7 @@ impl SourceTree {
     pub fn single(path: PathBuf, content: String) -> Self {
         SourceTree {
             sources: [(path.clone(), content)].into(),
+            // the std lib source ID is 0, so user-supplied sources are 1 or greater
             source_ids: [(1, path)].into(),
             root: None,
         }
@@ -479,6 +475,7 @@ impl SourceTree {
 
         for (index, (path, content)) in iter.into_iter().enumerate() {
             res.sources.insert(path.clone(), content);
+            // the std lib source ID is 0, so user-supplied sources are 1 or greater
             res.source_ids.insert((index + 1) as u16, path);
         }
         res
@@ -513,9 +510,14 @@ pub mod internal {
 
         let root_module = semantic::resolve(pl).map_err(ErrorMessages::from)?;
 
-        let (main, _) = root_module.find_main_rel(&[]).unwrap();
-        let mut fc =
-            semantic::reporting::collect_frames(*main.clone().into_relation_var().unwrap());
+        let (main, _) = root_module
+            .find_main_rel(&[])
+            .map_err(|(_, span)| semantic::missing_main_error(&root_module, span))?;
+        let main = main
+            .clone()
+            .into_relation_var()
+            .map_err(|_| semantic::missing_main_error(&root_module, None))?;
+        let mut fc = semantic::reporting::collect_frames(*main);
         fc.ast = ast;
 
         Ok(fc)
@@ -570,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_target_from_str() {
-        assert_debug_snapshot!(Target::from_str("sql.postgres"), @r"
+        assert_debug_snapshot!(Target::from_str("sql.postgres"), @"
         Ok(
             Sql(
                 Some(
@@ -609,6 +611,24 @@ mod tests {
             },
         )
         "#);
+    }
+
+    /// Lineage of a query with no main pipeline reports the same error as
+    /// `compile`, rather than panicking.
+    #[test]
+    fn test_lineage_without_main_pipeline() {
+        use insta::assert_snapshot;
+
+        let lineage = |prql: &str| {
+            let pl = super::prql_to_pl(prql).unwrap();
+            let Err(errors) = super::internal::pl_to_lineage(pl) else {
+                panic!("expected an error");
+            };
+            errors.inner[0].reason.clone()
+        };
+
+        assert_snapshot!(lineage("let x = 5"), @"PRQL queries must begin with 'from'");
+        assert_snapshot!(lineage("5"), @"PRQL queries must begin with 'from'");
     }
 
     /// Confirm that all target names can be parsed.
@@ -650,9 +670,10 @@ mod tests {
                 &super::Options::default().no_signature()
             ).unwrap(),
             @"
-        WITH table_0 AS (
-          SELECT
-            DISTINCT ON (media_type_id) track_id,
+        WITH
+        table_0 AS (
+          SELECT DISTINCT
+            ON (media_type_id) track_id,
             media_type_id,
             name
           FROM
@@ -702,9 +723,10 @@ mod tests {
                 &super::Options::default().no_signature()
             ).unwrap(),
             @"
-        WITH table_0 AS (
-          SELECT
-            DISTINCT ON (media_type_id) track_id,
+        WITH
+        table_0 AS (
+          SELECT DISTINCT
+            ON (media_type_id) track_id,
             media_type_id,
             name
           FROM

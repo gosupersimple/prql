@@ -1,7 +1,7 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
 use std::sync::OnceLock;
 
+use prqlc_parser::lexer;
 use regex::Regex;
 
 use super::{WriteOpt, WriteSource};
@@ -61,8 +61,8 @@ fn needs_parenthesis(this: &pr::Expr, opt: &WriteOpt) -> bool {
     }
 
     if opt.context_strength < binding_strength {
-        // parent has higher binding strength, which means it would "steal" operand of this expr
-        // => parenthesis are needed
+        // parent has lower binding strength, so it won't "steal" operand of this expr
+        // => no parenthesis needed
         return false;
     }
 
@@ -91,7 +91,7 @@ impl WriteSource for pr::ExprKind {
         use pr::ExprKind::*;
 
         match &self {
-            Ident(ident) => Some(ident.to_string()),
+            Ident(ident) => Some(write_ident(ident)),
 
             Pipeline(pipeline) => SeparatedExprs {
                 inline: " | ",
@@ -162,7 +162,7 @@ impl WriteSource for pr::ExprKind {
                 for (name, arg) in &func_call.named_args {
                     r += opt.consume(" ")?;
 
-                    r += opt.consume(name)?;
+                    r += opt.consume(&write_ident_part(name))?;
 
                     r += opt.consume(":")?;
 
@@ -180,19 +180,23 @@ impl WriteSource for pr::ExprKind {
             Func(c) => {
                 let mut r = "func ".to_string();
 
-                for param in &c.params {
+                // The parser partitions parameters by whether they have a
+                // default, so `params` never carries one and `named_params`
+                // always does. A PL AST deserialized from JSON is under no such
+                // constraint, so write whatever each parameter actually holds
+                // rather than what its list implies: a parameter with no default
+                // is a positional one, and one with a default is named.
+                for param in c.params.iter().chain(&c.named_params) {
                     r += opt.consume(&write_ident_part(&param.name))?;
-                    r += opt.consume(" ")?;
                     if let Some(ty) = &param.ty {
+                        r += opt.consume(" ")?;
                         let ty = ty.write_between("<", ">", opt.clone())?;
                         r += opt.consume(&ty)?;
-                        r += opt.consume(" ")?;
                     }
-                }
-                for param in &c.named_params {
-                    r += opt.consume(&write_ident_part(&param.name))?;
-                    r += opt.consume(":")?;
-                    r += opt.consume(&param.default_value.as_ref().unwrap().write(opt.clone())?)?;
+                    if let Some(default_value) = &param.default_value {
+                        r += opt.consume(":")?;
+                        r += opt.consume(&default_value.write(opt.clone())?)?;
+                    }
                     r += opt.consume(" ")?;
                 }
                 r += opt.consume("-> ")?;
@@ -277,7 +281,6 @@ fn binding_strength(expr: &pr::ExprKind) -> u8 {
         // Weaker than a child assign, since `select x = 1`
         // Weaker than a binary operator, since `filter x == 1`
         pr::ExprKind::FuncCall(_) => 10,
-        // ExprKind::FuncCall(_) if !is_parent => 2,
         pr::ExprKind::Func(_) => 7,
 
         // other nodes should not contain any inner exprs
@@ -319,36 +322,42 @@ impl WriteSource for pr::Ident {
         let width = self.path.iter().map(|p| p.len() + 1).sum::<usize>() + self.name.len();
         opt.consume_width(width as u16)?;
 
-        let mut r = String::new();
-        for part in &self.path {
-            r += &write_ident_part(part);
-            r += ".";
-        }
-        r += &write_ident_part(&self.name);
-        Some(r)
+        Some(write_ident(self))
     }
 }
 
-fn keywords() -> &'static HashSet<&'static str> {
-    static KEYWORDS: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    KEYWORDS.get_or_init(|| {
-        HashSet::from_iter([
-            "let", "into", "case", "prql", "type", "module", "internal", "func",
-        ])
-    })
+/// Write a dotted identifier, quoting each part that needs it.
+///
+/// `pr::Ident`'s `Display` impl looks similar but has its own copy of the
+/// "needs backticks" rule which doesn't know about reserved words, so codegen
+/// must not reach for `to_string()` here.
+fn write_ident(ident: &pr::Ident) -> String {
+    let mut r = String::new();
+    for part in &ident.path {
+        r += &write_ident_part(part);
+        r += ".";
+    }
+    r += &write_ident_part(&ident.name);
+    r
 }
 
 fn valid_prql_ident() -> &'static Regex {
     static VALID_PRQL_IDENT: OnceLock<Regex> = OnceLock::new();
     VALID_PRQL_IDENT.get_or_init(|| {
+        // Mirrors `ident_part()` in the lexer, minus its acceptance of
+        // non-ASCII alphabetics — quoting one of those is merely noisy, while
+        // leaving a name bare that the lexer won't accept breaks the output.
+        // `*` is here because `write_ident` uses this for `a.*`.
+        //
         // Pomsky expression (regex is to Pomsky what SQL is to PRQL):
-        // ^ ('*' | [ascii_alpha '_$'] [ascii_alpha ascii_digit '_$']* ) $
-        Regex::new(r"^(?:\*|[a-zA-Z_$][a-zA-Z0-9_$]*)$").unwrap()
+        // ^ ('*' | [ascii_alpha '_'] [ascii_alpha ascii_digit '_']* ) $
+        Regex::new(r"^(?:\*|[a-zA-Z_][a-zA-Z0-9_]*)$").unwrap()
     })
 }
 
 pub fn write_ident_part(s: &str) -> Cow<'_, str> {
-    if valid_prql_ident().is_match(s) && !keywords().contains(s) {
+    let reserved = lexer::KEYWORDS.contains(&s) || lexer::RESERVED_LITERALS.contains(&s);
+    if valid_prql_ident().is_match(s) && !reserved {
         s.into()
     } else {
         format!("`{s}`").into()
@@ -403,7 +412,8 @@ impl WriteSource for pr::Stmt {
                         "".to_string()
                     };
 
-                    r += opt.consume(&format!("let {} {}", var_def.name, typo))?;
+                    r +=
+                        opt.consume(&format!("let {} {}", write_ident_part(&var_def.name), typo))?;
 
                     if let Some(val) = &var_def.value {
                         r += opt.consume("= ")?;
@@ -413,7 +423,7 @@ impl WriteSource for pr::Stmt {
                 }
 
                 pr::VarDefKind::Let => {
-                    r += opt.consume(&format!("let {} = ", var_def.name))?;
+                    r += opt.consume(&format!("let {} = ", write_ident_part(&var_def.name)))?;
 
                     r += &var_def.value.as_ref().unwrap().write(opt)?;
                     r += "\n";
@@ -434,19 +444,31 @@ impl WriteSource for pr::Stmt {
                     }
 
                     if var_def.kind == pr::VarDefKind::Into {
-                        r += &format!("into {}", var_def.name);
+                        r += &format!("into {}", write_ident_part(&var_def.name));
                         r += "\n";
                     }
                 }
             },
+            pr::StmtKind::TypeDef(pr::TypeDef {
+                name,
+                value:
+                    pr::Ty {
+                        kind: pr::TyKind::Enum(enum_tuple),
+                        ..
+                    },
+            }) => {
+                r += opt.consume(&format!("enum {} ", write_ident_part(name)))?;
+                r += &enum_tuple.write(opt)?;
+                r += "\n";
+            }
             pr::StmtKind::TypeDef(type_def) => {
-                r += opt.consume(&format!("type {}", type_def.name))?;
+                r += opt.consume(&format!("type {}", write_ident_part(&type_def.name)))?;
                 r += opt.consume(" = ")?;
                 r += &type_def.value.kind.write(opt)?;
                 r += "\n";
             }
             pr::StmtKind::ModuleDef(module_def) => {
-                r += &format!("module {} {{\n", module_def.name);
+                r += &format!("module {} {{\n", write_ident_part(&module_def.name));
                 opt.indent += 1;
 
                 r += &module_def.stmts.write(opt.clone())?;
@@ -488,9 +510,18 @@ fn display_interpolation(
                     .replace('}', "}}")
                     .as_str()
             }
-            pr::InterpolateItem::Expr { expr, .. } => {
+            // The `:format` suffix carries meaning — in `std.sql.prql` it's the
+            // required binding strength of the interpolated expression — so it
+            // has to be written back out. The parser reads it as "everything up
+            // to the closing brace", so braces don't need escaping, but the
+            // string escapes the lexer removed do.
+            pr::InterpolateItem::Expr { expr, format } => {
                 r += "{";
                 r += &expr.write(opt.clone())?;
+                if let Some(format) = format {
+                    r += ":";
+                    r += &format.replace('\\', "\\\\").replace('"', "\\\"");
+                }
                 r += "}"
             }
         }
@@ -557,7 +588,7 @@ mod test {
             exprs: vec![short.clone(), long.clone(), long, short.clone()],
         }));
         // colons are a workaround to avoid trimming
-        assert_snapshot!(pipeline.write(opt.clone()).unwrap(), @r"
+        assert_snapshot!(pipeline.write(opt.clone()).unwrap(), @"
         (
             short
             some_really_long_and_really_long_name
@@ -613,6 +644,62 @@ mod test {
     #[test]
     fn test_func() {
         assert_is_formatted(r#"let a = func x y:false -> x and y"#);
+    }
+
+    /// A type annotation on a parameter with a default used to be dropped, so
+    /// `fmt` silently removed the constraint: `f x:"str"` against
+    /// `func x <int>:5` is a type error before formatting and compiles clean
+    /// after it.
+    #[test]
+    fn test_typed_func_params() {
+        assert_is_formatted(r#"let a = func x <int> -> x"#);
+        assert_is_formatted(r#"let a = func x <int>:5 -> x"#);
+        assert_is_formatted(r#"let a = func x <int>:5 y <text>:"d" -> x"#);
+        assert_is_formatted(r#"let a = func x <int> y <text>:"d" -> x"#);
+    }
+
+    /// The parser partitions parameters by whether they have a default, so
+    /// `params` never carries one and `named_params` always does. A PL AST
+    /// deserialized from JSON — which `pl_to_prql` also accepts — is under no
+    /// such constraint, so a parameter is written as what it holds rather than
+    /// as what its list implies. Writing a `named_params` entry without a
+    /// default used to panic, and a `params` entry's default was dropped.
+    #[test]
+    fn test_func_params_mismatching_their_list() {
+        /// `x <int>`, with the default supplied by the caller.
+        fn param(default_value: Option<pr::Expr>) -> pr::FuncParam {
+            pr::FuncParam {
+                name: "x".to_string(),
+                ty: Some(pr::Ty::new(pr::TyKind::Ident(pr::Ident::from_name("int")))),
+                default_value: default_value.map(Box::new),
+            }
+        }
+
+        fn write_func(params: Vec<pr::FuncParam>, named_params: Vec<pr::FuncParam>) -> String {
+            let func = pr::Expr::new(pr::ExprKind::Func(
+                pr::Func {
+                    return_ty: None,
+                    body: Box::new(pr::Expr::new(pr::ExprKind::Ident(pr::Ident::from_name(
+                        "x".to_string(),
+                    )))),
+                    params,
+                    named_params,
+                }
+                .into(),
+            ));
+            func.write(WriteOpt::default()).unwrap()
+        }
+
+        let five = || pr::Expr::new(pr::ExprKind::Literal(pr::Literal::Integer(5)));
+
+        // A `named_params` entry with no default is a positional parameter.
+        assert_snapshot!(write_func(vec![], vec![param(None)]), @"func x <int> -> x");
+
+        // A `params` entry with a default keeps it.
+        assert_snapshot!(
+            write_func(vec![param(Some(five()))], vec![]),
+            @"func x <int>:5 -> x"
+        );
     }
 
     #[test]
@@ -715,6 +802,106 @@ into a
         );
     }
 
+    /// Declaration names that aren't valid bare idents must keep their
+    /// backticks, otherwise `fmt` emits source that no longer parses.
+    #[test]
+    fn test_quoted_declaration_names() {
+        assert_is_formatted(
+            r#"
+let `my var` = 5
+"#,
+        );
+
+        assert_is_formatted(
+            r#"
+let `my var` <int>
+"#,
+        );
+
+        assert_is_formatted(
+            r#"
+5
+into `my var`
+"#,
+        );
+
+        assert_is_formatted(
+            r#"
+type `my type` = int
+"#,
+        );
+
+        assert_is_formatted(
+            r#"
+type t = {`my field` = int}
+"#,
+        );
+
+        assert_is_formatted(
+            r#"
+enum `my enum` {Paid = 0}
+"#,
+        );
+
+        assert_is_formatted(
+            r#"
+module `my mod` {
+  let a = 5
+}
+"#,
+        );
+
+        // A declaration named after a keyword also needs quoting
+        assert_is_formatted(
+            r#"
+let `case` = 5
+"#,
+        );
+    }
+
+    /// Every reserved word needs quoting, not just the ones we thought to list
+    /// by hand — `import` and `enum` were missing from the codegen's own copy
+    /// of the list, so `let `import` = 5` formatted to unparsable source.
+    ///
+    /// `true` / `false` / `null` lex as literals rather than keywords, and were
+    /// missing for the same reason. In declaration position they fail loudly
+    /// like `import`; in expression position they're worse, since the output
+    /// still parses — as a literal instead of the column that was written.
+    #[test]
+    fn test_every_reserved_word_is_quoted() {
+        for word in lexer::KEYWORDS
+            .iter()
+            .chain(lexer::RESERVED_LITERALS.iter())
+        {
+            assert_is_formatted(&format!("let `{word}` = 5"));
+            assert_is_formatted(&format!("from t\nselect {{`{word}`}}"));
+        }
+    }
+
+    /// `$` is not an ident character in PRQL — the lexer reads it as the start
+    /// of a `$param` token — so a name containing one has to keep its
+    /// backticks. `valid_prql_ident` accepted `$` because it was copied from
+    /// the SQL-side `utils::valid_ident`, where Postgres does allow it.
+    #[test]
+    fn test_quoted_dollar_in_name() {
+        assert_is_formatted("from t\nselect {`a$b`}");
+        assert_is_formatted("from t\nselect {x = t.`$foo`}");
+        assert_is_formatted("let `$foo` = 5");
+    }
+
+    /// Named arguments need their backticks too. Unlike the declaration names
+    /// above, dropping them produces output that still parses — as a different
+    /// call, since the unquoted name splits into a positional argument.
+    #[test]
+    fn test_quoted_named_arg() {
+        assert_is_formatted(
+            r#"
+from t
+derive x = (foo `my arg`:5)
+"#,
+        );
+    }
+
     #[test]
     fn test_query_def() {
         assert_is_formatted(
@@ -722,5 +909,31 @@ into a
 prql version:"^0.9" target:sql.sqlite
 "#,
         );
+    }
+
+    /// The `:format` suffix on an interpolation used to be dropped on the floor.
+    /// In `std.sql.prql` that suffix is the operand's required binding strength,
+    /// so formatting the file rewrote `s"MIN({column:0})"` to `s"MIN({column})"`
+    /// and silently changed how the operator parenthesizes its argument.
+    #[test]
+    fn test_interpolation_format_is_preserved() {
+        assert_is_formatted(r#"let my_min = func column -> s"MIN({column:0})""#);
+        assert_is_formatted(
+            r#"let log = func base column -> s"LOG10({column:0}) / LOG10({base:0})""#,
+        );
+        assert_is_formatted(
+            r#"
+from t
+derive x = f"{a:>10}-{b}"
+"#,
+        );
+        // The lexer strips string escapes before the interpolation is parsed, so
+        // a quote or a backslash in the format has to be escaped on the way out —
+        // otherwise the quote terminates the string and the output doesn't parse.
+        assert_is_formatted(r#"let x = f"{a:\"q\"}""#);
+        assert_is_formatted(r#"let y = f"{a:\\}""#);
+        // Braces are the exception: the parser reads the format up to the closing
+        // brace without unescaping, so `{` round-trips as itself.
+        assert_is_formatted(r#"let z = f"{a:{}""#);
     }
 }

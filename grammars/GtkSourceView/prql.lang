@@ -20,7 +20,6 @@
     <style id="boolean"         name="Boolean value"     map-to="def:boolean"/>
     <style id="built-in-object" name="Built-in object"   map-to="def:builtin"/>
     <style id="comment"         name="Comment"           map-to="def:comment"/>
-    <style id="declaration"     name="Declarations"      map-to="def:type"/>
     <style id="escaped-char"    name="Escaped Character" map-to="def:special-char"/>
     <style id="floating-point"  name="Floating Point"    map-to="def:floating-point"/>
     <style id="string"          name="String"            map-to="def:string"/>
@@ -39,8 +38,19 @@
       <keyword>true</keyword>
     </context>
 
-    <context id="declarations" style-ref="declaration">
+    <!-- Keep in sync with the lexer's `keyword` parser in
+         prqlc/prqlc-parser/src/lexer/mod.rs -->
+    <context id="keywords" style-ref="keyword">
       <keyword>let</keyword>
+      <keyword>into</keyword>
+      <keyword>case</keyword>
+      <keyword>prql</keyword>
+      <keyword>type</keyword>
+      <keyword>module</keyword>
+      <keyword>internal</keyword>
+      <keyword>func</keyword>
+      <keyword>import</keyword>
+      <keyword>enum</keyword>
     </context>
 
     <context id="unicode-bdi" style-ref="unicode-bdi">
@@ -59,7 +69,6 @@
       <keyword>int16</keyword>
       <keyword>int32</keyword>
       <keyword>int64</keyword>
-      <keyword>int128</keyword>
       <keyword>text</keyword>
       <keyword>date</keyword>
       <keyword>time</keyword>
@@ -95,7 +104,6 @@
     <context id="built-in-object" style-ref="built-in-object">
       <keyword>date</keyword>
       <keyword>math</keyword>
-      <keyword>prql</keyword>
     </context>
 
     <!-- https://prql-lang.org/book/reference/stdlib/ -->
@@ -164,7 +172,10 @@
     </context>
 
     <context id="date-functions" style-ref="function">
+      <keyword>now</keyword>
       <keyword>to_text</keyword>
+      <keyword>diff</keyword>
+      <keyword>trunc</keyword>
     </context>
 
     <context id="math-functions" style-ref="function">
@@ -307,7 +318,7 @@
 
     <context id="single-quoted-r-string" style-ref="string" end-at-line-end="true" class="string" class-disabled="no-spell-check">
       <start>r'</start>
-      <end>r'</end>
+      <end>'</end>
       <include>
         <context ref="def:line-continue"/>
       </include>
@@ -358,7 +369,7 @@
           <match>(?&lt;![\w\.])0[xX](_?[0-9A-Fa-f])+(?![\w\.])</match>
         </context>
 
-        <context ref="declarations"/>
+        <context ref="keywords"/>
         <context ref="dimension"/>
         <context ref="double-quoted-triple-string"/>
         <context ref="single-quoted-triple-string"/>

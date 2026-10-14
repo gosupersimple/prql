@@ -44,7 +44,7 @@ That's sufficient for making an initial contribution to the compiler.
 > & instructions.
 
 For more advanced development; for example compiling for wasm or previewing the
-website, we have two options:
+website, we have a few options:
 
 ### Option 1: Use the project's `task`
 
@@ -78,7 +78,7 @@ website, we have two options:
   cargo test
   ```
 
-  ...and if that doesn't complete successfully, ensure we have Python >= 3.7, to
+  ...and if that doesn't complete successfully, ensure we have Python >= 3.9, to
   compile `prqlc-python`.
 
 - For more involved contributions, such as building the website, playground,
@@ -136,7 +136,7 @@ To load the shell:
 
    ```sh
    mkdir -p ~/.config/nix/
-   tee 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+   echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
    ```
 
    For NixOS users, follow instructions [here](https://nixos.wiki/wiki/Flakes).
@@ -174,7 +174,9 @@ change!
 
 - If a change is user-facing, please add a line in
   [**`CHANGELOG.md`**](https://github.com/PRQL/prql/blob/main/CHANGELOG.md),
-  with `{message}, ({@contributor, #X})` where `X` is the PR number.
+  with `{message}, (@contributor, #X)` where `X` is the PR number. The PR number
+  only exists once the PR is open, so the entry usually lands in a follow-up
+  commit on the same branch.
   - If there's a missing entry, a follow-up PR containing just the changelog
     entry is welcome.
 - We're using [Conventional Commits](https://www.conventionalcommits.org)
@@ -380,7 +382,7 @@ inconsistent in watchexec. Let's revert back if it gets solved.
   minutes, and we should be reassessing their scope if they take longer than
   that. Once these pass, a pull request can be merged.
 
-- **[GitHub Actions on merge](https://github.com/PRQL/prql/blob/c042eef48709e2c1af577161554fd09f14e67e0f/.github/workflows/pull-request.yaml#L124)**
+- **[GitHub Actions on merge](https://github.com/PRQL/prql/blob/main/.github/workflows/tests.yaml)**
   — we run a wider set tests on every merge to main. This includes testing
   across OSs, all our language bindings, a measure of test code coverage, and
   some performance benchmarks.
@@ -410,8 +412,8 @@ the confidence to make changes faster, please raise an issue.
 
 ## Website
 
-The website is published together with the book and the playground, and is
-automatically built and released on any push to the `web` branch.
+The website is published together with the book and the playground, from a
+release's tag and from any later push to the `web` branch.
 
 The `web` branch points to the latest release plus any website-specific fixes.
 That way, the compiler behavior in the playground matches the latest release
@@ -453,60 +455,64 @@ for when we use the main prql repo vs separate repos for bindings:
 
 Currently we release in a semi-automated way:
 
-1. PR & merge an updated
-   [Changelog](https://github.com/PRQL/prql/blob/main/CHANGELOG.md). GitHub will
-   produce a draft version at <https://github.com/PRQL/prql/releases/new>,
-   including "New Contributors".
+1. If the version needs changing (for example, a planned patch release that
+   should instead be a minor release), run
+   `cargo release $version --no-publish --no-push --execute --no-verify --no-confirm --no-tag && task prqlc:test-all`
+   to set it, then PR the resulting commit. Otherwise the version is already
+   correct, set by the previous release's patch bump.
 
-   Use this script to generate a line introducing the enumerated changes:
+2. PR & merge an updated
+   [Changelog](https://github.com/PRQL/prql/blob/main/CHANGELOG.md). Rename the
+   `## [unreleased]` heading to the new version and date (matching the format of
+   the entries below it) and curate its entries. Leave no `## [unreleased]`
+   section; step 5 recreates it. This section becomes the release's notes
+   verbatim — the release workflow reads it out of `CHANGELOG.md` at the tagged
+   commit — so the heading must start with `## $version`, and a tag pushed
+   without a matching section fails the release rather than publishing empty
+   notes.
+
+   Generate the line that introduces the enumerated changes with:
 
    ```sh
-   echo "It has $(git rev-list --count $(git rev-list --tags --max-count=1)..) commits from $(git shortlog --summary $(git rev-list --tags --max-count=1).. | wc -l | tr -d '[:space:]') contributors. Selected changes:"
+   echo "$version has $(git rev-list --count $(git rev-list --tags --max-count=1)..) commits from $(git shortlog --summary $(git rev-list --tags --max-count=1).. | wc -l | tr -d '[:space:]') contributors. Selected changes:"
    ```
 
    When a fix closes an issue reported by someone other than the PR author,
    thank them in the changelog entry, e.g.
    `(@pr-author, #5639; reported by @issue-reporter)`.
 
-2. If the current version is correct, then skip ahead. But if the version needs
-   to be changed — for example, we had planned on a patch release, but instead
-   require a minor release — then run
-   `cargo release version $version -x && cargo release replace -x && task prqlc:test-all`
-   to bump the version, and PR the resulting commit.
-
-3. Ensure all changes intended for the release are merged to `main`. Then create
-   the release (which creates the tag on the latest commit on `main`):
-
-   **Web UI:** Go to
-   [Draft a new release](https://github.com/PRQL/prql/releases/new){{footnote: Only
-       maintainers have access to this page.}},
-   copy the changelog entry into the release
-   description{{footnote: Unfortunately GitHub's markdown parser
-        interprets linebreaks as newlines. I haven't found a better way of
-        editing the markdown to look reasonable than manually editing the text
-        or asking LLM to help.}}, enter the tag to be created, and hit
-   "Publish".
-
-   **CLI:**
+3. Ensure all changes intended for the release are merged to `main`. Then push
+   the tag:
 
    ```sh
-   gh release create $version --title "$version" --notes "$(cat <<'EOF'
-   <paste changelog entry here>
-   EOF
-   )"
+   git switch main && git pull
+   git tag $version && git push origin $version
    ```
 
-4. From there, both the tag and release is created and all packages are
-   published automatically based on our
-   [release workflow](https://github.com/PRQL/prql/blob/main/.github/workflows/release.yaml).
+4. The tag starts the
+   [release workflow](https://github.com/PRQL/prql/blob/main/.github/workflows/release.yaml),
+   which creates the GitHub release as a **draft** with the changelog section as
+   its notes, uploads the `prqlc` binaries, `.deb`s and `.rpm`s into the draft,
+   and publishes it once they have all landed. It then publishes the packages
+   and the website. Its publishing jobs sit behind the `release` and
+   `github-pages` environments, so approve the pending deployments on the run's
+   page.
+
+   The draft is the reason the tag rather than the release starts this: GitHub's
+   immutable-releases setting refuses asset uploads to a release that is already
+   published, so nothing may be uploaded after the release goes live. If the run
+   fails partway, an unpublished draft is left behind — delete it before
+   re-running, or the re-run uploads into it a second time.
 
 5. Run
    `cargo release patch --no-publish --no-push --execute --no-verify --no-confirm --no-tag && task prqlc:test-all`
-   to bump the versions and add a new Changelog section; then PR the resulting
-   commit. Note this currently contains `task prqlc:test-all` to update snapshot
-   tests which contain the version.
+   to bump to the next development version, then PR the resulting commit. This
+   recreates the `## [unreleased]` section for the next cycle. The version is
+   embedded in snapshots in both `prqlc` and the book, and `task prqlc:test-all`
+   accepts both: `prqlc`'s docs-generator snapshots and the book's
+   `prql.version` example.
 
-<!-- Note we used to have `cargo release version patch -x --no-confirm && cargo release replace -x --no-confirm && task prqlc:test-all`, which was simpler, but in order for `prev_version` to work, we can't separate the `patch` and `replace`, and we need `prev_version` for the prqlc version constraint (search for `prev_version` if unclear). If we moved back to upgrading the tags at the time of release rather than after, we could go back to that. -->
+<!-- `version` and `replace` must run in one `cargo release` invocation (not separate `cargo release version` + `cargo release replace` steps) so the `prev_version` replacement for the prqlc version constraint in target.md resolves. -->
 
 6. Check whether there are [milestones](https://github.com/PRQL/prql/milestones)
    that need to be pushed out.

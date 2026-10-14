@@ -15,7 +15,7 @@ parentheses, so we know where arguments of inner function end and the arguments
 of outer function start.
 
 ```prql no-eval
-outer_func arg_1 (inner_func arg_a, arg_b) arg_2
+outer_func arg_1 (inner_func arg_a arg_b) arg_2
 ```
 
 The function name must refer to a function variable, which has either
@@ -30,10 +30,10 @@ function_name arg1 named_param:arg2 arg3
 
 ## Pipeline
 
-There is a alternative way of calling functions: using a pipeline. Regardless of
-whether the pipeline is delimited by pipe symbol `|` or a new line, the pipeline
-is equivalent to applying each of functions as the last argument of the next
-function.
+There is an alternative way of calling functions: using a pipeline. Regardless
+of whether the pipeline is delimited by pipe symbol `|` or a new line, the
+pipeline is equivalent to applying each of functions as the last argument of the
+next function.
 
 ```prql no-eval
 a | foo 3 | bar 'hello' 'world' | baz

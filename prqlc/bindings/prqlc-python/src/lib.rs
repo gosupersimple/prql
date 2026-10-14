@@ -7,11 +7,12 @@ use pyo3::{exceptions, prelude::*};
 #[pyfunction]
 #[pyo3(signature = (prql_query, options=None))]
 pub fn compile(prql_query: &str, options: Option<CompileOptions>) -> PyResult<String> {
-    let Ok(options) = options.map(convert_options).transpose() else {
-        return Err(PyErr::new::<exceptions::PyValueError, _>(
-            "Invalid options".to_string(),
-        ));
-    };
+    // Report what was wrong with the options rather than a bare "Invalid
+    // options" — an unknown `target` or `display` names itself in the error.
+    let options = options
+        .map(convert_options)
+        .transpose()
+        .map_err(|err| PyErr::new::<exceptions::PyValueError, _>(err.to_string()))?;
 
     prqlc_lib::compile(prql_query, &options.unwrap_or_default())
         .map_err(|err| PyErr::new::<exceptions::PyValueError, _>(err.to_string()))
@@ -99,7 +100,10 @@ fn prqlc(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// Compilation options for SQL backend of the compiler.
-#[pyclass]
+// `#[pyclass]` + `Clone` still derives `FromPyObject` implicitly in 0.29, but
+// deprecated since 0.28, and workspace clippy runs `-D warnings`. `compile`
+// and `rq_to_sql` take this by value, so opt in rather than skip.
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct CompileOptions {
     /// Pass generated SQL string through a formatter that splits it into
@@ -147,6 +151,7 @@ impl CompileOptions {
 
 fn convert_options(o: CompileOptions) -> Result<prqlc_lib::Options, prqlc_lib::ErrorMessages> {
     use prqlc_lib::Error;
+    use strum::VariantNames;
     let target = prqlc_lib::Target::from_str(&o.target).map_err(prqlc_lib::ErrorMessages::from)?;
 
     Ok(prqlc_lib::Options {
@@ -154,8 +159,14 @@ fn convert_options(o: CompileOptions) -> Result<prqlc_lib::Options, prqlc_lib::E
         target,
         signature_comment: o.signature_comment,
         color: false,
-        display: prqlc_lib::DisplayOptions::from_str(&o.display).map_err(|e| ErrorMessages {
-            inner: vec![Error::new_simple(format!("Invalid display option: {e}")).into()],
+        // strum's own error is "Matching variant not found", which names
+        // neither the rejected value nor the accepted ones.
+        display: prqlc_lib::DisplayOptions::from_str(&o.display).map_err(|_| {
+            ErrorMessages::from(Error::new_simple(format!(
+                "Invalid display option: {:?}; expected one of: {}",
+                o.display,
+                prqlc_lib::DisplayOptions::VARIANTS.join(", ")
+            )))
         })?,
     })
 }
@@ -183,7 +194,7 @@ mod test {
 
         assert_snapshot!(
             compile("from employees | filter (age | in 20..30)", opts).unwrap(),
-            @r"
+            @"
         SELECT
           *
         FROM
@@ -192,6 +203,19 @@ mod test {
           age BETWEEN 20 AND 30
         "
         );
+    }
+
+    #[test]
+    fn invalid_display_option() {
+        let opts = CompileOptions {
+            format: true,
+            target: "sql.any".to_string(),
+            signature_comment: false,
+            color: false,
+            display: "rainbow".to_string(),
+        };
+
+        assert_snapshot!(convert_options(opts).unwrap_err(), @r#"Error: Invalid display option: "rainbow"; expected one of: plain, ansi_color"#);
     }
 
     #[test]
@@ -206,7 +230,7 @@ mod test {
 
         let prql = r#"from artists | select {name, id} | filter (id | in [1, 2, 3])"#;
         assert_snapshot!(
-             prql_to_pl(prql).and_then(|x| pl_to_rq(x.as_str())).and_then(|x|rq_to_sql(x.as_str(), opts)).unwrap(), @r"
+             prql_to_pl(prql).and_then(|x| pl_to_rq(x.as_str())).and_then(|x|rq_to_sql(x.as_str(), opts)).unwrap(), @"
         SELECT
           name,
           id
@@ -221,7 +245,7 @@ mod test {
     fn prql_pl_prql_roundtrip() {
         let prql = r#"from artists | select {name, id} | filter (id | in [1, 2, 3])"#;
         assert_snapshot!(
-             prql_to_pl(prql).and_then(|x| pl_to_prql(x.as_str())).unwrap(), @r"
+             prql_to_pl(prql).and_then(|x| pl_to_prql(x.as_str())).unwrap(), @"
         from artists
         select {name, id}
         filter (id | in [1, 2, 3])
@@ -232,7 +256,7 @@ mod test {
     fn debug_prql_lineage() {
         assert_snapshot!(
             debug::prql_lineage(r#"from a | select { beta, gamma }"#).unwrap(),
-            @r#"{"frames":[["1:9-31",{"columns":[{"Single":{"name":["a","beta"],"target_id":121,"target_name":null}},{"Single":{"name":["a","gamma"],"target_id":122,"target_name":null}}],"inputs":[{"id":119,"name":"a","table":["default_db","a"]}]}]],"nodes":[{"id":119,"kind":"Ident","span":"1:0-6","ident":{"Ident":["default_db","a"]},"parent":124},{"id":121,"kind":"Ident","span":"1:18-22","ident":{"Ident":["this","a","beta"]},"targets":[119],"parent":123},{"id":122,"kind":"Ident","span":"1:24-29","ident":{"Ident":["this","a","gamma"]},"targets":[119],"parent":123},{"id":123,"kind":"Tuple","span":"1:16-31","children":[121,122],"parent":124},{"id":124,"kind":"TransformCall: Select","span":"1:9-31","children":[119,123]}],"ast":{"name":"Project","stmts":[{"VarDef":{"kind":"Main","name":"main","value":{"Pipeline":{"exprs":[{"FuncCall":{"name":{"Ident":["from"],"span":"1:0-4"},"args":[{"Ident":["a"],"span":"1:5-6"}]},"span":"1:0-6"},{"FuncCall":{"name":{"Ident":["select"],"span":"1:9-15"},"args":[{"Tuple":[{"Ident":["beta"],"span":"1:18-22"},{"Ident":["gamma"],"span":"1:24-29"}],"span":"1:16-31"}]},"span":"1:9-31"}]},"span":"1:0-31"}},"span":"1:0-31"}]}}"#
+            @r#"{"frames":[["1:9-31",{"columns":[{"Single":{"name":["a","beta"],"target_id":8,"target_name":null}},{"Single":{"name":["a","gamma"],"target_id":9,"target_name":null}}],"inputs":[{"id":7,"name":"a","table":["default_db","a"]}]}]],"nodes":[{"id":7,"kind":"Ident","span":"1:0-6","ident":{"Ident":["default_db","a"]},"parent":11},{"id":8,"kind":"Ident","span":"1:18-22","ident":{"Ident":["this","a","beta"]},"targets":[7],"parent":10},{"id":9,"kind":"Ident","span":"1:24-29","ident":{"Ident":["this","a","gamma"]},"targets":[7],"parent":10},{"id":10,"kind":"Tuple","span":"1:16-31","children":[8,9],"parent":11},{"id":11,"kind":"TransformCall: Select","span":"1:9-31","children":[7,10]}],"ast":{"name":"Project","stmts":[{"VarDef":{"kind":"Main","name":"main","value":{"Pipeline":{"exprs":[{"FuncCall":{"name":{"Ident":["from"],"span":"1:0-4"},"args":[{"Ident":["a"],"span":"1:5-6"}]},"span":"1:0-6"},{"FuncCall":{"name":{"Ident":["select"],"span":"1:9-15"},"args":[{"Tuple":[{"Ident":["beta"],"span":"1:18-22"},{"Ident":["gamma"],"span":"1:24-29"}],"span":"1:16-31"}]},"span":"1:9-31"}]},"span":"1:0-31"}},"span":"1:0-31"}]}}"#
         );
     }
 
@@ -240,7 +264,7 @@ mod test {
     fn debug_pl_to_lineage() {
         assert_snapshot!(
             prql_to_pl(r#"from a | select { beta, gamma }"#).and_then(|x| debug::pl_to_lineage(&x)).unwrap(),
-            @r#"{"frames":[["1:9-31",{"columns":[{"Single":{"name":["a","beta"],"target_id":121,"target_name":null}},{"Single":{"name":["a","gamma"],"target_id":122,"target_name":null}}],"inputs":[{"id":119,"name":"a","table":["default_db","a"]}]}]],"nodes":[{"id":119,"kind":"Ident","span":"1:0-6","ident":{"Ident":["default_db","a"]},"parent":124},{"id":121,"kind":"Ident","span":"1:18-22","ident":{"Ident":["this","a","beta"]},"targets":[119],"parent":123},{"id":122,"kind":"Ident","span":"1:24-29","ident":{"Ident":["this","a","gamma"]},"targets":[119],"parent":123},{"id":123,"kind":"Tuple","span":"1:16-31","children":[121,122],"parent":124},{"id":124,"kind":"TransformCall: Select","span":"1:9-31","children":[119,123]}],"ast":{"name":"Project","stmts":[{"VarDef":{"kind":"Main","name":"main","value":{"Pipeline":{"exprs":[{"FuncCall":{"name":{"Ident":["from"],"span":"1:0-4"},"args":[{"Ident":["a"],"span":"1:5-6"}]},"span":"1:0-6"},{"FuncCall":{"name":{"Ident":["select"],"span":"1:9-15"},"args":[{"Tuple":[{"Ident":["beta"],"span":"1:18-22"},{"Ident":["gamma"],"span":"1:24-29"}],"span":"1:16-31"}]},"span":"1:9-31"}]},"span":"1:0-31"}},"span":"1:0-31"}]}}"#
+            @r#"{"frames":[["1:9-31",{"columns":[{"Single":{"name":["a","beta"],"target_id":8,"target_name":null}},{"Single":{"name":["a","gamma"],"target_id":9,"target_name":null}}],"inputs":[{"id":7,"name":"a","table":["default_db","a"]}]}]],"nodes":[{"id":7,"kind":"Ident","span":"1:0-6","ident":{"Ident":["default_db","a"]},"parent":11},{"id":8,"kind":"Ident","span":"1:18-22","ident":{"Ident":["this","a","beta"]},"targets":[7],"parent":10},{"id":9,"kind":"Ident","span":"1:24-29","ident":{"Ident":["this","a","gamma"]},"targets":[7],"parent":10},{"id":10,"kind":"Tuple","span":"1:16-31","children":[8,9],"parent":11},{"id":11,"kind":"TransformCall: Select","span":"1:9-31","children":[7,10]}],"ast":{"name":"Project","stmts":[{"VarDef":{"kind":"Main","name":"main","value":{"Pipeline":{"exprs":[{"FuncCall":{"name":{"Ident":["from"],"span":"1:0-4"},"args":[{"Ident":["a"],"span":"1:5-6"}]},"span":"1:0-6"},{"FuncCall":{"name":{"Ident":["select"],"span":"1:9-15"},"args":[{"Tuple":[{"Ident":["beta"],"span":"1:18-22"},{"Ident":["gamma"],"span":"1:24-29"}],"span":"1:16-31"}]},"span":"1:9-31"}]},"span":"1:0-31"}},"span":"1:0-31"}]}}"#
         );
     }
 }

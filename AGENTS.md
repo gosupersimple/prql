@@ -1,4 +1,4 @@
-# Claude
+# PRQL Development Guidelines
 
 ## Development Workflow
 
@@ -37,6 +37,8 @@ The test suite is configured to minimize token usage:
 
 ## Tests
 
+Read `prqlc/prqlc/tests/AGENTS.md` before changing compiler tests.
+
 Prefer inline snapshots for almost all tests:
 
 ```rust
@@ -60,8 +62,8 @@ The test commands above with `--accept` will fill in the result automatically.
   - Use `insta::assert_snapshot!` for compact, readable test assertions
   - Fast to run, easy to review in PRs
 
-- **Use integration tests** (`prqlc/tests/integration/queries/*.prql`) only
-  when:
+- **Use integration tests** (`prqlc/prqlc/tests/integration/queries/*.prql`)
+  only when:
   - Developing large, complex features that need comprehensive testing
   - Testing end-to-end behavior across multiple compilation stages
   - The test requires external resources or multi-file scenarios
@@ -86,14 +88,17 @@ mod test {
 For viewing `prqlc` output, for any stage of the compilation process:
 
 ```sh
-# Compile PRQL to SQL
-cargo run -p prqlc -- compile "from employees | filter country == 'USA'"
+# Compile PRQL to SQL (the argument is a path; pipe to read from stdin)
+echo "from employees | filter country == 'USA'" | cargo run -q -p prqlc -- compile
 
 # Format PRQL code
-cargo run -p prqlc -- fmt "from employees | filter country == 'USA'"
+echo "from employees | filter country == 'USA'" | cargo run -q -p prqlc -- fmt
+
+# Or pass a file
+cargo run -q -p prqlc -- compile prqlc/prqlc/tests/integration/queries/aggregation.prql
 
 # See all available commands
-cargo run -p prqlc -- --help
+cargo run -q -p prqlc -- --help
 ```
 
 ## Linting
@@ -124,24 +129,34 @@ Error messages should avoid 2nd person (you/your). Use softer modal verbs like
 - ❌ "you can only use X" → ✅ "X requires Y" (for hard constraints)
 - ❌ "Have you forgotten an argument?" → ✅ "Argument might be missing?"
 
+## Changelog
+
+A user-facing change needs a `CHANGELOG.md` line in the same PR, under the
+matching heading, formatted `{message}, (@contributor, #X)` with `X` the PR
+number — which only exists once the PR is open, so add the entry in a follow-up
+commit rather than dropping it. Internal refactors, test-only changes and
+workflow regens don't need one. See
+`web/book/src/project/contributing/development.md` under **Contribution workflow
+› Commits**.
+
+Documentation counts as user-facing when it documents how to use PRQL: the
+book's tutorial, reference, bindings and integrations pages, the bindings'
+READMEs and API docs, and the website's pages on using PRQL and the metadata
+they serve (such as link-preview tags). Those get an entry under the
+`**Documentation**:` heading. Documentation about the project rather than its
+use — this file, `web/book/src/project/contributing/`, the website roadmap, a
+binding's `DEVELOPMENT.md` — doesn't need one.
+
 ## Documentation
 
-For Claude to view crate documentation:
+Build crate documentation with:
 
 ```sh
-# Build documentation for a specific crate
 cargo doc -p prqlc
-
-# View the generated HTML documentation with the View tool
-# The docs are generated at target/doc/{crate_name}/index.html
-View target/doc/prqlc/index.html
-
-# For specific module documentation
-View target/doc/prqlc/module_name/index.html
-
-# For function documentation
-View target/doc/prqlc/fn.compile.html
 ```
+
+The generated HTML is at `target/doc/{crate_name}/index.html`. Follow its links
+to modules and functions.
 
 ## Releases & Environment
 

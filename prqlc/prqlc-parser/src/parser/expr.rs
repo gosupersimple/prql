@@ -1,7 +1,6 @@
 use std::collections::{hash_map::Entry, HashMap};
 
-use chumsky;
-use chumsky::input::BorrowInput;
+use chumsky::input::{BorrowInput, MapExtra};
 use chumsky::pratt::*;
 use chumsky::prelude::*;
 use itertools::Itertools;
@@ -95,7 +94,10 @@ where
         let term = unary(term);
         let term = range(term);
 
-        // Binary operators using Pratt parsing
+        // Binary operators using Pratt parsing. Every level folds its
+        // operands the same way, so they share one fold function; a
+        // non-capturing closure is `Copy`, so each `infix` gets its own copy.
+        //
         // Precedence levels (higher = tighter binding):
         // 6: Pow (right associative)
         // 5: Mul, Div, Mod (left associative)
@@ -104,73 +106,62 @@ where
         // 2: Coalesce (left associative)
         // 1: And (left associative)
         // 0: Or (left associative)
+        let binary = |left: Expr, op: BinOp, right: Expr, extra: &mut MapExtra<'a, '_, I, _>| {
+            let span = extra.span();
+            ExprKind::Binary(BinaryExpr {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            })
+            .into_expr(span)
+        };
+
         term.pratt((
-            infix(right(6), operator_pow(), |left, op, right, extra| {
-                let span = extra.span();
-                ExprKind::Binary(BinaryExpr {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
-                .into_expr(span)
-            }),
-            infix(left(5), operator_mul(), |left, op, right, extra| {
-                let span = extra.span();
-                ExprKind::Binary(BinaryExpr {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
-                .into_expr(span)
-            }),
-            infix(left(4), operator_add(), |left, op, right, extra| {
-                let span = extra.span();
-                ExprKind::Binary(BinaryExpr {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
-                .into_expr(span)
-            }),
-            infix(left(3), operator_compare(), |left, op, right, extra| {
-                let span = extra.span();
-                ExprKind::Binary(BinaryExpr {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
-                .into_expr(span)
-            }),
-            infix(left(2), operator_coalesce(), |left, op, right, extra| {
-                let span = extra.span();
-                ExprKind::Binary(BinaryExpr {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
-                .into_expr(span)
-            }),
-            infix(left(1), operator_and(), |left, op, right, extra| {
-                let span = extra.span();
-                ExprKind::Binary(BinaryExpr {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
-                .into_expr(span)
-            }),
-            infix(left(0), operator_or(), |left, op, right, extra| {
-                let span = extra.span();
-                ExprKind::Binary(BinaryExpr {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                })
-                .into_expr(span)
-            }),
+            infix(right(6), operator_pow(), binary),
+            infix(left(5), operator_mul(), binary),
+            infix(left(4), operator_add(), binary),
+            infix(left(3), operator_compare(), binary),
+            infix(left(2), operator_coalesce(), binary),
+            infix(left(1), operator_and(), binary),
+            infix(left(0), operator_or(), binary),
         ))
         .boxed()
     })
+}
+
+pub(crate) fn literal_tuple<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone + 'a
+where
+    I: Input<'a, Token = lr::Token, Span = Span> + BorrowInput<'a>,
+{
+    use chumsky::recovery::{skip_then_retry_until, via_parser};
+
+    sequence(maybe_aliased(expr()).validate(|expr, extra, emit| {
+        let span = extra.span();
+
+        if expr.alias.is_none() {
+            emit.emit(Rich::custom(span, "must specify an alias for this value"));
+        }
+
+        match expr.kind {
+            ExprKind::Literal(_) => (),
+            _ => emit.emit(Rich::custom(extra.span(), "expected a literal value")),
+        };
+
+        expr
+    }))
+    .delimited_by(
+        ctrl('{'),
+        ctrl('}')
+            .recover_with(via_parser(end()))
+            .recover_with(skip_then_retry_until(
+                any_ref().ignored(),
+                ctrl('}').ignored().or(ctrl(',').ignored()).or(end()),
+            )),
+    )
+    .map(ExprKind::Tuple)
+    .labelled("literal tuple")
+    .map_with(|kind, extra| ExprKind::into_expr(kind, extra.span()))
+    .boxed()
 }
 
 fn tuple<'a, I>(

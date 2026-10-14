@@ -19,7 +19,7 @@ looks like this:
 A relation is composed of rows. Each row in a relation contains a value for each
 of the relation's columns. Each column in a relation has a unique name and a
 designated data type. The table above is a relation, and has columns named
-`invoice_id`and `customer_id` each with a data type of "integer number", a
+`invoice_id` and `customer_id` each with a data type of "integer number", a
 `billing_city` column with a data type of "text", several other columns, and a
 `total` column that contains floating-point numbers.
 
@@ -48,13 +48,13 @@ The `select` function picks the columns to pass through based on a list and
 discards all others. Formally, that list is a _tuple_ of comma-separated
 expressions wrapped in `{ ... }`.
 
-Suppose we only need the `order_id` and `total` columns. Use `select` to choose
-the columns to pass through. _(Try it in the
+Suppose we only need the `invoice_id` and `total` columns. Use `select` to
+choose the columns to pass through. _(Try it in the
 [Playground.](https://prql-lang.org/playground/))_
 
 ```prql no-eval
 from invoices
-select { order_id, total }
+select { invoice_id, total }
 ```
 
 We can write the items in the tuple on one or several lines: trailing commas are
@@ -84,8 +84,6 @@ new column for Value Added Tax, set at 19% of the invoice total.
 from invoices
 derive { VAT = total * 0.19 }
 ```
-
-<!-- todo: make sure that the new column is unnamed -->
 
 The value of the new column can be a constant (such as a number or a string), or
 can be computed from the value of an existing column. Note that the value of the
@@ -141,5 +139,3 @@ select {
   VAT,
 }
 ```
-
-<!-- PRQL uses the data from... _Where does our data come from? Do we use some canonical version?_ -->

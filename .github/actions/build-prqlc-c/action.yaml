@@ -46,6 +46,10 @@ runs:
           ${{ (github.ref == 'refs/heads/main') && contains(inputs.target,
           'musl') }}
         shared-key: rust-${{ inputs.target }}
+        # Caching `~/.cargo/bin/` breaks the rustup `cargo`/`rustc` symlinks
+        # on the new macos-15 runner image — see
+        # https://github.com/Swatinem/rust-cache/issues/341.
+        cache-bin: "false"
 
     - if: runner.os == 'Linux'
       shell: bash
@@ -79,9 +83,9 @@ runs:
       shell: bash
       if: runner.os != 'Windows'
       run: |
-        export ARTIFACT_NAME="prqlc_c-${{ github.ref_type == 'tag' && github.ref_name || 0 }}-${{ matrix.target }}.tar.gz"
+        export ARTIFACT_NAME="prqlc_c-${{ github.ref_type == 'tag' && github.ref_name || 0 }}-${{ inputs.target }}.tar.gz"
         echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >>"$GITHUB_ENV"
-        cd target/${{ matrix.target }}/${{ inputs.profile == 'release' && 'release' || 'debug' }}
+        cd target/${{ inputs.target }}/${{ inputs.profile == 'release' && 'release' || 'debug' }}
         ls -al
         tar czf "../../../${ARTIFACT_NAME}" *prqlc_c*
 
@@ -89,14 +93,14 @@ runs:
       shell: bash
       if: runner.os == 'Windows'
       run: |
-        export ARTIFACT_NAME="prqlc_c-${{ github.ref_type == 'tag' && github.ref_name || 0 }}-${{ matrix.target }}.zip"
+        export ARTIFACT_NAME="prqlc_c-${{ github.ref_type == 'tag' && github.ref_name || 0 }}-${{ inputs.target }}.zip"
         echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >>"$GITHUB_ENV"
-        cd target/${{ matrix.target }}/${{ inputs.profile == 'release' && 'release' || 'debug' }}
+        cd target/${{ inputs.target }}/${{ inputs.profile == 'release' && 'release' || 'debug' }}
         ls -al
         7z a "../../../${ARTIFACT_NAME}" *prqlc_c*
 
     - name: Upload prqlc-c
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       with:
         name: prqlc_c-${{ inputs.target }}-${{ inputs.profile }}
         path: ${{ env.ARTIFACT_NAME }}

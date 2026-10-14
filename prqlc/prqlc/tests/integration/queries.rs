@@ -82,7 +82,7 @@ mod compileall {
         let generic_sql = prqlc::compile(&prql, &options).unwrap();
 
         // next compile with each dialect
-        let mut diffsnap = "".to_owned();
+        let mut diffs = Vec::new();
         for dialect in Dialect::iter() {
             if !should_run_query(dialect, &prql) {
                 continue;
@@ -96,13 +96,16 @@ mod compileall {
             let dialect_sql = prqlc::compile(&prql, &dialect_options).unwrap();
 
             let diff = TextDiff::from_lines(&generic_sql, &dialect_sql);
-            diffsnap = format!(
-                "{diffsnap}\n{}",
-                diff.unified_diff()
-                    .context_radius(10)
-                    .header("generic", &dialect.to_string())
-            );
+            let udiff = diff
+                .unified_diff()
+                .context_radius(10)
+                .header("generic", &dialect.to_string())
+                .to_string();
+            if !udiff.is_empty() {
+                diffs.push(udiff);
+            }
         }
+        let diffsnap = diffs.join("\n");
         with_settings!({ input_file => prql_path }, {
             assert_snapshot!(test_name, diffsnap, &prql)
         });
@@ -125,8 +128,11 @@ mod fmt {
             assert_snapshot!(test_name, &formatted, &prql)
         });
 
-        // Check the formatted queries can still compile
-        prqlc::prql_to_pl(&formatted).unwrap();
+        // Formatting is idempotent: re-parsing & re-formatting the output must
+        // reproduce it exactly. This also covers the weaker property that the
+        // formatted query still parses.
+        let reformatted = prqlc::pl_to_prql(&prqlc::prql_to_pl(&formatted).unwrap()).unwrap();
+        similar_asserts::assert_eq!(formatted, reformatted);
     }
 }
 
@@ -145,7 +151,10 @@ mod debug_lineage {
 
         let lineage = serde_yaml::to_string(&fc).unwrap();
 
-        with_settings!({ input_file => prql_path }, {
+        with_settings!({
+            input_file => prql_path,
+            filters => vec![(r"\b0:\d+-\d+", "[std]")],
+        }, {
             assert_snapshot!(test_name, &lineage, &prql)
         });
     }

@@ -6,6 +6,7 @@ use super::Resolver;
 use crate::ir::decl::{Decl, DeclKind, Module};
 use crate::ir::pl::{Expr, ExprKind};
 use crate::pr::Ident;
+use crate::pr::TyKind;
 use crate::semantic::{NS_INFER, NS_INFER_MODULE, NS_SELF, NS_THAT, NS_THIS};
 use crate::Error;
 use crate::Result;
@@ -13,18 +14,32 @@ use crate::WithErrorInfo;
 
 impl Resolver<'_> {
     pub(super) fn resolve_ident(&mut self, ident: &Ident) -> Result<Ident, Error> {
+        self.resolve_ident_through_imports(ident, &mut HashSet::new())
+    }
+
+    /// Resolves `ident`, following import declarations to their targets.
+    /// `imports_seen` holds the imports already followed, so a cycle of imports
+    /// is reported as an error instead of recursing forever.
+    fn resolve_ident_through_imports(
+        &mut self,
+        ident: &Ident,
+        imports_seen: &mut HashSet<Ident>,
+    ) -> Result<Ident, Error> {
         let mut res = if let Some(default_namespace) = self.default_namespace.clone() {
             self.resolve_ident_core(ident, Some(&default_namespace))
         } else {
-            let mut ident = ident.clone().prepend(self.current_module_path.clone());
-
-            let mut res = self.resolve_ident_core(&ident, None);
-            for _ in 0..self.current_module_path.len() {
+            // Walk up the module hierarchy: start with the fully-qualified
+            // path (current_module_path + ident), then strip the innermost
+            // ancestor segment on each retry until the prefix is empty.
+            let prefix_len = self.current_module_path.len();
+            let mut full = ident.clone().prepend(self.current_module_path.clone());
+            let mut res = self.resolve_ident_core(&full, None);
+            for i in (0..prefix_len).rev() {
                 if res.is_ok() {
                     break;
                 }
-                ident = ident.pop_front().1.unwrap();
-                res = self.resolve_ident_core(&ident, None);
+                full.path.remove(i);
+                res = self.resolve_ident_core(&full, None);
             }
             res
         };
@@ -34,7 +49,12 @@ impl Resolver<'_> {
                 let decl = self.root_mod.module.get(fq_ident).unwrap();
                 if let DeclKind::Import(target) = &decl.kind {
                     let target = target.clone();
-                    return self.resolve_ident(&target);
+                    if !imports_seen.insert(fq_ident.clone()) {
+                        return Err(Error::new_simple(format!(
+                            "circular import: `{fq_ident}` refers back to itself"
+                        )));
+                    }
+                    return self.resolve_ident_through_imports(&target, imports_seen);
                 }
             }
             Err(e) => {
@@ -98,9 +118,7 @@ impl Resolver<'_> {
                 (true, Some(ns)) => ident.clone().prepend(vec![ns.clone()]),
                 _ => ident.clone(),
             };
-            return self
-                .resolve_ident_wildcard(&wildcard_ident)
-                .map_err(Error::new_simple);
+            return self.resolve_ident_wildcard(&wildcard_ident);
         }
 
         // base case: direct lookup
@@ -143,7 +161,7 @@ impl Resolver<'_> {
 
             // Was not able to infer.
             Err(None) => Err(Error::new_simple(
-                format!("Unknown name `{}`", &ident).to_string(),
+                format!("Unknown name `{}`", ident).to_string(),
             )),
             Err(Some(msg)) => Err(msg),
         }
@@ -214,38 +232,140 @@ impl Resolver<'_> {
         Ok(module_ident + Ident::from_name(original.name.clone()))
     }
 
-    fn resolve_ident_wildcard(&mut self, ident: &Ident) -> Result<Ident, String> {
+    fn resolve_ident_wildcard(&mut self, ident: &Ident) -> Result<Ident, Error> {
         let ident_self = ident.clone().pop().ok_or_else(|| {
-            "Column wildcard `*` must be qualified, e.g. `table_name.*`".to_string()
+            Error::new_simple("Column wildcard `*` must be qualified, e.g. `table_name.*`")
         })? + Ident::from_name(NS_SELF);
-        let mut res = self.root_mod.module.lookup(&ident_self);
-        if res.contains(&ident_self) {
-            res = HashSet::from_iter([ident_self]);
-        }
-        if res.len() != 1 {
-            return Err(format!("Unknown relation {ident}"));
-        }
-        let module_fq_self = res.into_iter().next().unwrap();
 
-        // Materialize into a tuple literal, containing idents.
-        let fields = self.construct_wildcard_include(&module_fq_self);
+        let decls = self.root_mod.module.lookup(&ident_self);
+        log::trace!("resolve_ident_wildcard decls: {decls:?}");
 
-        // This is just a workaround to return an Expr from this function.
-        // We wrap the expr into DeclKind::Expr and save it into the root module.
-        let cols_expr = Expr {
-            flatten: true,
-            ..Expr::new(ExprKind::Tuple(fields))
+        match decls.len() {
+            1 => {
+                let module_fq_self = decls.into_iter().next().unwrap();
+
+                // Materialize into a tuple literal, containing idents.
+                let mut fields = self.construct_wildcard_include(&module_fq_self);
+                log::trace!("resolve_ident_wildcard fields: {fields:?}");
+
+                // The enclosing tuple inserts each of its aliases into the `this`
+                // frame as it resolves them, so later fields can refer to earlier
+                // ones. `this.*` must not pick those up: it means the columns
+                // entering the transform, not the ones the tuple is in the middle
+                // of defining. Including them duplicates a shadowed column, and
+                // `{z = 5, this.*}` under `tuple_uniq take:late` would resolve `z`
+                // to a field that `tuple_uniq` then discards.
+                if module_fq_self.path == [NS_THIS] {
+                    fields.retain(|field| match &field.kind {
+                        ExprKind::Ident(ident) => !self
+                            .in_flight_tuple_aliases
+                            .iter()
+                            .any(|tuple| tuple.contains(&ident.name)),
+                        _ => true,
+                    });
+                }
+
+                // `construct_wildcard_include` groups each input's columns into
+                // a nested, aliased tuple. For a wildcard we want a flat list of
+                // column references so that transforms consuming the expansion
+                // (e.g. `sort`) receive scalar columns rather than tuples.
+                // Without flattening, `this.*` over a relation with computed
+                // columns yields nested tuples that fail to lower (#6044).
+                let fields = flatten_wildcard_fields(fields);
+
+                // This is just a workaround to return an Expr from this function.
+                // We wrap the expr into DeclKind::Expr and save it into the root module.
+                let cols_expr = Expr {
+                    flatten: true,
+                    ..Expr::new(ExprKind::Tuple(fields))
+                };
+                let cols_expr = DeclKind::Expr(Box::new(cols_expr));
+                let save_as = format!("_wildcard_match_{module_fq_self}");
+                self.root_mod
+                    .module
+                    .names
+                    .insert(save_as.to_string(), cols_expr.into());
+
+                // Then we can return ident to that decl.
+                return Ok(Ident::from_name(save_as));
+            }
+            0 => {} // fallthrough
+            _ => return Err(ambiguous_error(decls, Some(&ident.name))),
         };
-        let cols_expr = DeclKind::Expr(Box::new(cols_expr));
-        let save_as = "_wildcard_match";
-        self.root_mod
-            .module
-            .names
-            .insert(save_as.to_string(), cols_expr.into());
 
-        // Then we can return ident to that decl.
-        Ok(Ident::from_name(save_as))
+        // Second pass - look for an Expr referenced by the ident; if
+        // it has an inferred ty that is relation-shaped, return that.
+        let ident = ident.clone().pop().unwrap();
+        let decls = self.root_mod.module.lookup(&ident);
+        log::trace!("resolve_ident_wildcard pass 2 decls: {decls:?}");
+
+        match decls.len() {
+            1 => {
+                let relation_fq = decls.into_iter().next().unwrap();
+
+                // Retrieve the expr type
+                let decl = self.root_mod.module.get(&relation_fq).unwrap();
+                let decl_kind = decl.kind.clone();
+
+                let ty_tuple = (|| {
+                    let DeclKind::Expr(expr) = &decl_kind else {
+                        return None;
+                    };
+                    let Some(ty) = &expr.ty else { return None };
+                    let TyKind::Array(Some(ty)) = &ty.kind else {
+                        return None;
+                    };
+                    let TyKind::Tuple(tup) = &ty.kind else {
+                        return None;
+                    };
+                    Some(tup)
+                })();
+
+                if let (DeclKind::Expr(expr), Some(ty_tuple)) = (&decl_kind, ty_tuple) {
+                    log::trace!("ty_tuple is {ty_tuple:#?}");
+
+                    let prefix = relation_fq.iter().collect_vec();
+                    let fields = self.construct_wildcard_from_lineage(&prefix, expr);
+                    log::trace!("resolve_ident_wildcard pass 2 fields: {fields:?}");
+
+                    // This is just a workaround to return an Expr from this function.
+                    // We wrap the expr into DeclKind::Expr and save it into the root module.
+                    let cols_expr = Expr {
+                        flatten: true,
+                        ..Expr::new(ExprKind::Tuple(fields))
+                    };
+                    let cols_expr = DeclKind::Expr(Box::new(cols_expr));
+                    let save_as = format!("_wildcard_match_{relation_fq}");
+                    self.root_mod
+                        .module
+                        .names
+                        .insert(save_as.to_string(), cols_expr.into());
+
+                    // Then we can return ident to that decl.
+                    return Ok(Ident::from_name(save_as));
+                }
+            }
+            0 => {} // fallthrough
+            _ => return Err(ambiguous_error(decls, Some(&ident.name))),
+        }
+
+        Err(Error::new_simple(format!("Unknown relation {ident}")))
     }
+}
+
+/// Recursively splice the per-input nested tuples produced by
+/// [`Resolver::construct_wildcard_include`] into a flat list of column
+/// references. Leaf columns carry their full path and inferred wildcards carry
+/// a `target_id`, so the input association survives the flattening.
+fn flatten_wildcard_fields(fields: Vec<Expr>) -> Vec<Expr> {
+    let mut res = Vec::new();
+    for field in fields {
+        match field.kind {
+            ExprKind::Tuple(inner) => res.extend(flatten_wildcard_fields(inner)),
+            _ => res.push(field),
+        }
+    }
+    res
 }
 
 fn ambiguous_error(idents: HashSet<Ident>, replace_name: Option<&String>) -> Error {
@@ -270,4 +390,72 @@ fn ambiguous_error(idents: HashSet<Ident>, replace_name: Option<&String>) -> Err
     chunks.sort();
     let hint = format!("could be any of: {}", chunks.join(", "));
     Error::new_simple("Ambiguous name").push_hint(hint)
+}
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    #[test]
+    fn test_self_import_is_an_error() {
+        let query = r#"
+        module a {
+          import x = a.x
+        }
+        from t | select {a.x}
+        "#;
+        assert_snapshot!(crate::tests::compile(query).unwrap_err(), @"
+        Error:
+           ╭─[ :5:26 ]
+           │
+         5 │         from t | select {a.x}
+           │                          ─┬─
+           │                           ╰─── circular import: `a.x` refers back to itself
+        ───╯
+        ");
+    }
+
+    #[test]
+    fn test_mutual_import_is_an_error() {
+        let query = r#"
+        module a {
+          import x = b.x
+        }
+        module b {
+          import x = a.x
+        }
+        from t | select {a.x}
+        "#;
+        assert_snapshot!(crate::tests::compile(query).unwrap_err(), @"
+        Error:
+           ╭─[ :8:26 ]
+           │
+         8 │         from t | select {a.x}
+           │                          ─┬─
+           │                           ╰─── circular import: `a.x` refers back to itself
+        ───╯
+        ");
+    }
+
+    #[test]
+    fn test_chained_imports_resolve() {
+        let query = r#"
+        module a {
+          import x = b.x
+        }
+        module b {
+          import x = c.y
+        }
+        module c {
+          let y = 1
+        }
+        from t | select {a.x}
+        "#;
+        assert_snapshot!(crate::tests::compile(query).unwrap(), @"
+        SELECT
+          1
+        FROM
+          t
+        ");
+    }
 }

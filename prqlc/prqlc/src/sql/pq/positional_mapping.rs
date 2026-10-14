@@ -84,7 +84,7 @@ pub fn compute_positional_mappings(
 
     log::trace!("traversing pipeline to obtain positional mapping:");
 
-    // Only process selected columns to avoid surnumerary one
+    // Only process selected columns to avoid supernumerary ones
     let add_columns = |columns: &mut Vec<CId>, cids: &[CId]| {
         if let Some(requirements) = requirements {
             columns.extend(cids.iter().filter(|cid| requirements.is_selected(cid)));
@@ -96,10 +96,8 @@ pub fn compute_positional_mappings(
     for transform in pipeline {
         match transform {
             SqlTransform::Super(s) => match s {
-                Transform::Compute(Compute { id, .. }) => {
-                    if !columns.contains(id) {
-                        add_columns(&mut columns, &[*id]);
-                    }
+                Transform::Compute(Compute { id, .. }) if !columns.contains(id) => {
+                    add_columns(&mut columns, &[*id]);
                 }
                 Transform::Select(cids) => {
                     columns.clear();

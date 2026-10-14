@@ -2,31 +2,12 @@
 source: prqlc/prqlc/tests/integration/queries.rs
 expression: "from invoices\nderive total = case [total < 10 => total * 2, true => total]\nselect { customer_id, invoice_id, total }\ntake 5\nappend (\n  from invoice_items\n  derive unit_price = case [unit_price < 1 => unit_price * 2, true => unit_price]\n  select { invoice_line_id, invoice_id, unit_price }\n  take 5\n)\nselect { a = customer_id * 2, b = math.round 1 (invoice_id * total) }\n"
 input_file: prqlc/prqlc/tests/integration/queries/append_select_compute.prql
-snapshot_kind: text
 ---
 --- generic
-+++ glaredb
-@@ -29,13 +29,13 @@
-         END AS unit_price,
-         invoice_line_id
-       FROM
-         invoice_items
-       LIMIT
-         5
-     ) AS table_4
- )
- SELECT
-   customer_id * 2 AS a,
--  ROUND(invoice_id * _expr_0, 1) AS b
-+  ROUND((invoice_id * _expr_0)::numeric, 1) AS b
- FROM
-   table_1
-
-
---- generic
 +++ postgres
-@@ -1,41 +1,34 @@
- WITH table_1 AS (
+@@ -1,41 +1,35 @@
+ WITH
+ table_1 AS (
 -  SELECT
 -    *
 -  FROM
@@ -56,8 +37,7 @@ snapshot_kind: text
 +    LIMIT
 +      5
 +  )
-   UNION
--  ALL
+   UNION ALL
 -  SELECT
 -    *
 -  FROM
@@ -74,7 +54,7 @@ snapshot_kind: text
 -      LIMIT
 -        5
 -    ) AS table_4
-+  ALL (
++  (
 +    SELECT
 +      invoice_id,
 +      CASE
@@ -97,8 +77,9 @@ snapshot_kind: text
 
 --- generic
 +++ redshift
-@@ -1,41 +1,34 @@
- WITH table_1 AS (
+@@ -1,41 +1,35 @@
+ WITH
+ table_1 AS (
 -  SELECT
 -    *
 -  FROM
@@ -128,8 +109,7 @@ snapshot_kind: text
 +    LIMIT
 +      5
 +  )
-   UNION
--  ALL
+   UNION ALL
 -  SELECT
 -    *
 -  FROM
@@ -146,7 +126,7 @@ snapshot_kind: text
 -      LIMIT
 -        5
 -    ) AS table_4
-+  ALL (
++  (
 +    SELECT
 +      invoice_id,
 +      CASE

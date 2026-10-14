@@ -6,16 +6,30 @@ const TRANSFORMS = [
   "from_text",
   "from",
   "group",
+  "intersect",
   "join",
+  "loop",
+  "remove",
   "select",
   "sort",
   "take",
-  "union",
   "window",
 ];
 const MODULES = ["date", "math", "text"];
 const BUILTIN_FUNCTIONS = ["case"]; // "in", "as"
-const KEYWORDS = ["let", "prql"];
+// Keep in sync with the lexer's `keyword` parser in
+// prqlc/prqlc-parser/src/lexer/mod.rs. `case` is listed above.
+const KEYWORDS = [
+  "let",
+  "prql",
+  "into",
+  "type",
+  "module",
+  "internal",
+  "func",
+  "import",
+  "enum",
+];
 const LITERALS = ["null", "true", "false"];
 
 const def = {
@@ -82,14 +96,17 @@ const def = {
       // We allow underscores, a bit more liberally than PRQL, which doesn't
       // allow them at the start or end (but that's difficult to express with
       // regex; contributions welcome).
-      [/[+-]?[^\w](([\d_]+(\.[\d_]+])?)|(\.[\d_]+))/, "number"],
+      [/[+-]?[^\w](([\d_]+(\.[\d_]+)?)|(\.[\d_]+))/, "number"],
 
-      // strings
+      // double-quoted strings
       [/"([^"\\]|\\.)*$/, "string.invalid"], // non-terminated string
       [/"/, { token: "string.quote", bracket: "@open", next: "@string" }],
 
-      // characters
-      [/'[^\\']'/, "string"],
+      // single-quoted strings; interchangeable with double quotes in PRQL, so
+      // they can hold arbitrary-length content (e.g. `'USA'`), not just a
+      // single character.
+      [/'([^'\\]|\\.)*$/, "string.invalid"], // non-terminated string
+      [/'/, { token: "string.quote", bracket: "@open", next: "@stringSingle" }],
     ],
 
     comment: [[/#.*/, "comment"]],
@@ -99,11 +116,16 @@ const def = {
       [/"/, { token: "string.quote", bracket: "@close", next: "@pop" }],
     ],
 
-    whitespace: [
-      [/[ \t\r\n]+/, "white"],
-      [/\/\*/, "comment", "@comment"],
-      [/\/\/.*$/, "comment"],
+    stringSingle: [
+      [/[^\\']+/, "string"],
+      [/'/, { token: "string.quote", bracket: "@close", next: "@pop" }],
     ],
+
+    // PRQL's only comment syntax is `#`, handled by the `comment` state above.
+    // There are no `//` line comments or `/* */` block comments — `//` is the
+    // integer-division operator (`TokenKind::DivInt` in the lexer), so a rule
+    // matching it here would swallow the rest of the line as a comment.
+    whitespace: [[/[ \t\r\n]+/, "white"]],
   },
 };
 export default def;

@@ -1,12 +1,9 @@
-use chumsky;
-
 use chumsky::Parser;
 use insta::assert_debug_snapshot;
 use insta::assert_snapshot;
 
-use crate::lexer::lex_source;
 use crate::lexer::lr::{Literal, TokenKind, Tokens};
-use crate::lexer::{lexer, literal, quoted_string};
+use crate::lexer::{lex_source, lex_source_recovery, lexer, literal, quoted_string};
 
 #[test]
 fn line_wrap() {
@@ -26,7 +23,7 @@ fn line_wrap() {
 
     // Basic line wrap test
     assert_debug_snapshot!(test_line_wrap_tokens(r"5 +
-    \ 3 "), @r"
+    \ 3 "), @"
     Tokens(
         [
             0..1: Literal(Integer(5)),
@@ -77,7 +74,7 @@ fn debug_display() {
         Tokens(lexer().parse(input).output().unwrap().to_vec())
     }
 
-    assert_debug_snapshot!(test_tokens("5 + 3"), @r"
+    assert_debug_snapshot!(test_tokens("5 + 3"), @"
     Tokens(
         [
             0..1: Literal(Integer(5)),
@@ -221,7 +218,7 @@ fn range() {
         Tokens(lexer().parse(input).output().unwrap().to_vec())
     }
 
-    assert_debug_snapshot!(test_range_tokens("1..2"), @r"
+    assert_debug_snapshot!(test_range_tokens("1..2"), @"
     Tokens(
         [
             0..1: Literal(Integer(1)),
@@ -231,7 +228,7 @@ fn range() {
     )
     ");
 
-    assert_debug_snapshot!(test_range_tokens("..2"), @r"
+    assert_debug_snapshot!(test_range_tokens("..2"), @"
     Tokens(
         [
             0..2: Range { bind_left: true, bind_right: true },
@@ -240,7 +237,7 @@ fn range() {
     )
     ");
 
-    assert_debug_snapshot!(test_range_tokens("1.."), @r"
+    assert_debug_snapshot!(test_range_tokens("1.."), @"
     Tokens(
         [
             0..1: Literal(Integer(1)),
@@ -265,9 +262,7 @@ fn range() {
 
 #[test]
 fn test_lex_source() {
-    use insta::assert_debug_snapshot;
-
-    assert_debug_snapshot!(lex_source("5 + 3"), @r"
+    assert_debug_snapshot!(lex_source("5 + 3"), @"
     Ok(
         Tokens(
             [
@@ -286,75 +281,71 @@ fn test_lex_source() {
 
 #[test]
 fn test_annotation_tokens() {
-    use insta::assert_debug_snapshot;
-
     // Test basic annotation token
-    let result = super::lex_source("@{binding_strength=1}");
+    let result = lex_source("@{binding_strength=1}");
     assert_debug_snapshot!(result, @r#"
-        Ok(
-            Tokens(
-                [
-                    0..0: Start,
-                    0..1: Annotate,
-                    1..2: Control('{'),
-                    2..18: Ident("binding_strength"),
-                    18..19: Control('='),
-                    19..20: Literal(Integer(1)),
-                    20..21: Control('}'),
-                ],
-            ),
-        )
-        "#);
+    Ok(
+        Tokens(
+            [
+                0..0: Start,
+                0..1: Annotate,
+                1..2: Control('{'),
+                2..18: Ident("binding_strength"),
+                18..19: Control('='),
+                19..20: Literal(Integer(1)),
+                20..21: Control('}'),
+            ],
+        ),
+    )
+    "#);
 
     // Test multi-line annotation
-    let result = super::lex_source(
+    let result = lex_source(
         r#"
         @{binding_strength=1}
         let add = a b -> a + b
         "#,
     );
     assert_debug_snapshot!(result, @r#"
-        Ok(
-            Tokens(
-                [
-                    0..0: Start,
-                    0..1: NewLine,
-                    9..10: Annotate,
-                    10..11: Control('{'),
-                    11..27: Ident("binding_strength"),
-                    27..28: Control('='),
-                    28..29: Literal(Integer(1)),
-                    29..30: Control('}'),
-                    30..31: NewLine,
-                    39..42: Keyword("let"),
-                    43..46: Ident("add"),
-                    47..48: Control('='),
-                    49..50: Ident("a"),
-                    51..52: Ident("b"),
-                    53..55: ArrowThin,
-                    56..57: Ident("a"),
-                    58..59: Control('+'),
-                    60..61: Ident("b"),
-                    61..62: NewLine,
-                ],
-            ),
-        )
-        "#);
+    Ok(
+        Tokens(
+            [
+                0..0: Start,
+                0..1: NewLine,
+                9..10: Annotate,
+                10..11: Control('{'),
+                11..27: Ident("binding_strength"),
+                27..28: Control('='),
+                28..29: Literal(Integer(1)),
+                29..30: Control('}'),
+                30..31: NewLine,
+                39..42: Keyword("let"),
+                43..46: Ident("add"),
+                47..48: Control('='),
+                49..50: Ident("a"),
+                51..52: Ident("b"),
+                53..55: ArrowThin,
+                56..57: Ident("a"),
+                58..59: Control('+'),
+                60..61: Ident("b"),
+                61..62: NewLine,
+            ],
+        ),
+    )
+    "#);
 }
 
 #[test]
 fn test_issue_triple_quoted_with_double_quote() {
-    use insta::assert_debug_snapshot;
-
-    // The specific test case from ISSUE.md that was failing
+    // A triple-quoted string whose body contains both quote characters: the
+    // lone `"` is content, and only the closing triple ends the literal.
     let input = r#""""
 ''
 Canada
 "
 
 """"#;
-    let result = super::lex_source(input);
-    eprintln!("Result: {:#?}", result);
+    let result = lex_source(input);
     assert_debug_snapshot!(result, @r#"
     Ok(
         Tokens(
@@ -369,22 +360,11 @@ Canada
 
 #[test]
 fn test_single_curly_quote() {
-    use insta::assert_debug_snapshot;
-
-    // Test what error we get for a single curly quote character
+    // A curly quote isn't a string delimiter, so it's rejected outright — and
+    // the span covers the one character, not its three UTF-8 bytes.
     let input = "’"; // U+2019 RIGHT SINGLE QUOTATION MARK
 
-    eprintln!("\n=== Single Curly Quote Test ===");
-    eprintln!("Input: {:?}", input);
-    eprintln!("Input bytes: {:?}", input.as_bytes());
-    eprintln!(
-        "Char 0: {:?} (U+{:04X})",
-        input.chars().next().unwrap(),
-        input.chars().next().unwrap() as u32
-    );
-
     let result = lex_source(input);
-    eprintln!("Result: {:#?}", result);
 
     assert_debug_snapshot!(result, @r#"
     Err(
@@ -407,36 +387,15 @@ fn test_single_curly_quote() {
 
 #[test]
 fn test_mississippi_curly_quotes() {
-    use insta::assert_debug_snapshot;
-
     // Test error reporting for curly quotes (U+2019)
     // This is the Mississippi test case from integration tests
     // NOTE: The quotes in this string are U+2019 RIGHT SINGLE QUOTATION MARK (curly quotes),
     // not U+0027 APOSTROPHE. Make sure your editor preserves them!
     let input = "Mississippi has four S’s and four I’s.";
 
-    eprintln!("\n=== Mississippi Curly Quotes Test ===");
-    eprintln!("Input: {:?}", input);
-    eprintln!("Input bytes: {:?}", input.as_bytes());
-    eprintln!(
-        "Char 22: {:?} (U+{:04X})",
-        input.chars().nth(22).unwrap(),
-        input.chars().nth(22).unwrap() as u32
-    );
-    eprintln!(
-        "Char 35: {:?} (U+{:04X})",
-        input.chars().nth(35).unwrap(),
-        input.chars().nth(35).unwrap() as u32
-    );
+    let result = lex_source(input);
 
-    let result1 = lex_source(input);
-    eprintln!("{:#?}", result1);
-
-    let (tokens, errors) = super::lex_source_recovery(input, 1);
-    eprintln!("Tokens: {:#?}", tokens);
-    eprintln!("Errors: {:#?}", errors);
-
-    assert_debug_snapshot!(result1, @r#"
+    assert_debug_snapshot!(result, @r#"
     Err(
         [
             Error {
@@ -457,26 +416,11 @@ fn test_mississippi_curly_quotes() {
 
 #[test]
 fn test_interpolation_empty() {
-    use insta::assert_debug_snapshot;
-
-    // Test the f"{}" case that's showing a changed error position
+    // An f-string opened but never closed: the error is reported at the end of
+    // input rather than at the interpolation's `{`.
     let input = r#"from x | select f"{}"#;
 
-    eprintln!("\n=== Interpolation Empty Test ===");
-    eprintln!("Input: {:?}", input);
-    eprintln!("Input bytes: {:?}", input.as_bytes());
-    eprintln!(
-        "Input length: {} bytes, {} chars",
-        input.len(),
-        input.chars().count()
-    );
-
     let result = lex_source(input);
-    eprintln!("lex_source result: {:#?}", result);
-
-    let (tokens, errors) = super::lex_source_recovery(input, 1);
-    eprintln!("lex_source_recovery tokens: {:#?}", tokens);
-    eprintln!("lex_source_recovery errors: {:#?}", errors);
 
     assert_debug_snapshot!(result, @r#"
     Err(
@@ -493,6 +437,137 @@ fn test_interpolation_empty() {
                 code: None,
             },
         ],
+    )
+    "#);
+}
+
+#[test]
+fn raw_string_delimiters() {
+    fn test_raw_string_tokens(input: &str) -> Tokens {
+        Tokens(lexer().parse(input).output().unwrap().to_vec())
+    }
+
+    assert_debug_snapshot!(test_raw_string_tokens(r#"r"\n""#), @r#"
+    Tokens(
+        [
+            0..5: Literal(RawString("\\n")),
+        ],
+    )
+    "#);
+
+    // The other quote character is content, not a delimiter.
+    assert_debug_snapshot!(test_raw_string_tokens(r#"r"it's""#), @r#"
+    Tokens(
+        [
+            0..7: Literal(RawString("it's")),
+        ],
+    )
+    "#);
+    assert_debug_snapshot!(test_raw_string_tokens(r#"r'say "hi"'"#), @r#"
+    Tokens(
+        [
+            0..11: Literal(RawString("say \"hi\"")),
+        ],
+    )
+    "#);
+
+    // A closing quote that doesn't match the opening one doesn't close the
+    // string, so these are unterminated rather than valid raw strings.
+    assert_debug_snapshot!(lex_source(r#"r"hello'"#), @r#"
+    Err(
+        [
+            Error {
+                kind: Error,
+                span: Some(
+                    0:8-8,
+                ),
+                reason: Unexpected {
+                    found: "end of input",
+                },
+                hints: [],
+                code: None,
+            },
+        ],
+    )
+    "#);
+    assert_debug_snapshot!(lex_source(r#"r'hello""#), @r#"
+    Err(
+        [
+            Error {
+                kind: Error,
+                span: Some(
+                    0:8-8,
+                ),
+                reason: Unexpected {
+                    found: "end of input",
+                },
+                hints: [],
+                code: None,
+            },
+        ],
+    )
+    "#);
+}
+
+/// `RESERVED_LITERALS` is hand-written next to `boolean()` / `null()`, so pin
+/// it to what the lexer actually does: each entry must lex as a `Literal`
+/// rather than an `Ident`, which is what makes it need backticks in codegen.
+#[test]
+fn test_reserved_literals_lex_as_literals() {
+    for word in crate::lexer::RESERVED_LITERALS {
+        let tokens = lexer().parse(word).output().unwrap().to_vec();
+        assert!(
+            matches!(tokens[0].kind, TokenKind::Literal(_)),
+            "`{word}` lexed as {:?}, expected a Literal",
+            tokens[0].kind
+        );
+    }
+}
+
+/// `lex_source_recovery` is the entry point `prqlc`'s parser uses, and the only
+/// one that threads a `source_id` — hence the `1:` on the span below, where
+/// `lex_source` hard-codes `0:`. Despite the name it doesn't resume after an
+/// error, so the tokens come back as `None` rather than as the prefix it had
+/// already lexed. Previously this function was called from two tests only to
+/// print its output, so nothing asserted on it.
+#[test]
+fn recovery_returns_no_tokens_on_error() {
+    let (tokens, errors) = lex_source_recovery("Mississippi has four S’s.", 1);
+
+    assert_debug_snapshot!(tokens, @"None");
+    assert_debug_snapshot!(errors, @r#"
+    [
+        Error {
+            kind: Error,
+            span: Some(
+                1:22-23,
+            ),
+            reason: Unexpected {
+                found: "'’'",
+            },
+            hints: [],
+            code: None,
+        },
+    ]
+    "#);
+}
+
+#[test]
+fn test_lex_source_non_ascii_spans() {
+    // Spans count chars, not bytes, so a multi-byte char doesn't shift the
+    // spans of the tokens after it.
+    assert_debug_snapshot!(lex_source("# é\nx 'ü' y"), @r#"
+    Ok(
+        Tokens(
+            [
+                0..0: Start,
+                0..3: Comment(" é"),
+                3..4: NewLine,
+                4..5: Ident("x"),
+                6..9: Literal(String("ü")),
+                10..11: Ident("y"),
+            ],
+        ),
     )
     "#);
 }

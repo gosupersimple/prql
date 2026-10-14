@@ -1,4 +1,4 @@
-;;; prql-mode.el --- Major mode for PRQL language -*- lexical-binding: t;
+;;; prql-mode.el --- Major mode for PRQL language -*- lexical-binding: t; -*-
 
 ;; URL: https://github.com/PRQL/prql
 ;; Keywords: languages
@@ -23,7 +23,7 @@
   "List of PRQL constants.")
 
 (defconst prql-data-types
-  '("bool" "float" "int" "int8" "int16" "int32" "int64" "int128" "text" "date" "time" "timestamp")
+  '("bool" "float" "int" "int8" "int16" "int32" "int64" "text" "date" "time" "timestamp")
   "List of PRQL data types.")
 
 (defconst prql-builtin-functions
@@ -40,11 +40,11 @@
   '("0o[0-7]+"
     "0x[0-9a-fA-F]+"
     "0b[01]+"
-    "[0-9]+*")
+    "[0-9]+")
   "Regex for matching PRQL numbers.")
 
 (defconst prql-other-keywords
-  '("prql" "case" "let" "type" "alias" "in" "loop" "module")
+  '("let" "into" "case" "prql" "type" "module" "internal" "func" "import" "enum")
   "List of other PRQL keywords.")
 
 (defvar prql-font-lock-keywords

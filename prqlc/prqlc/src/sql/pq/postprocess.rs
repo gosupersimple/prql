@@ -1,6 +1,7 @@
 //! An AST pass after compilation to PQ.
 //!
-//! Currently only moves [SqlTransform::Sort]s.
+//! Infers and propagates [SqlTransform::Sort]s through pipelines and assigns
+//! human-readable names to CTEs and relation variables.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -122,14 +123,14 @@ impl SortingInference<'_> {
                 if final_select.contains(&sort.column) {
                     log::debug!(
                         ".. sort column {:?} is in the final select columns, skip reverting",
-                        &sort.column
+                        sort.column
                     );
                     return;
                 }
                 // try renaming
                 if column_aliases.contains_key(&sort.column) {
                     let alias = column_aliases[&sort.column];
-                    log::debug!("..aliasing {:?} as {alias:?}", &sort.column);
+                    log::debug!("..aliasing {:?} as {alias:?}", sort.column);
                     sort.column = alias;
                 }
                 // try de-reverting with the target table
@@ -137,9 +138,9 @@ impl SortingInference<'_> {
                 if cid_mappings.contains_key(&sort.column) {
                     log::debug!(
                         ".. reverting {:?} forward to {:?} via redirects of {riid:?} ({:?})",
-                        &sort.column,
-                        &cid_mappings[&sort.column],
-                        &cid_mappings
+                        sort.column,
+                        cid_mappings[&sort.column],
+                        cid_mappings
                     );
                     sort.column = cid_mappings[&sort.column];
                 }
@@ -250,7 +251,7 @@ impl PqFold for SortingInference<'_> {
             }
 
             // store sorting to be used later in From references
-            let sorting = self.last_sorting.drain(..).collect();
+            let sorting = std::mem::take(&mut self.last_sorting);
             log::debug!("--- sorting {sorting:?}");
             let sorting = CteSorting {
                 sorting,
@@ -267,7 +268,7 @@ impl PqFold for SortingInference<'_> {
         self.main_relation = true;
         let mut main_relation = self.fold_sql_relation(query.main_relation)?;
         log::debug!("--== last_sorting {0:?}", self.last_sorting);
-        let last_sorting = self.last_sorting.drain(..).collect::<Vec<_>>();
+        let last_sorting = std::mem::take(&mut self.last_sorting);
 
         // push a sort at the back of the main pipeline
         if let SqlRelation::AtomicPipeline(pipeline) = &mut main_relation {
@@ -346,7 +347,7 @@ impl PqMapper<RelationExpr, RelationExpr, (), ()> for SortingInference<'_> {
                             let rel = self.fold_sql_relation(rel)?;
 
                             // infer sorting from sub-query
-                            sorting = self.last_sorting.drain(..).collect();
+                            sorting = std::mem::take(&mut self.last_sorting);
                             sorting_from_distinct_on = self.last_sorting_from_distinct_on;
 
                             expr.kind = RelationExprKind::SubQuery(rel);
@@ -376,11 +377,9 @@ impl PqMapper<RelationExpr, RelationExpr, (), ()> for SortingInference<'_> {
                 // DISTINCT ON sorting is internal to the group (for row selection),
                 // so it must not propagate past joins. Explicit user sorts are preserved.
                 // See issue #4633.
-                SqlTransform::Join { .. } => {
-                    if sorting_from_distinct_on {
-                        sorting.clear();
-                        sorting_from_distinct_on = false;
-                    }
+                SqlTransform::Join { .. } if sorting_from_distinct_on => {
+                    sorting.clear();
+                    sorting_from_distinct_on = false;
                 }
 
                 // emit Sort before Take
@@ -516,7 +515,7 @@ impl PqMapper<RelationExpr, RelationExpr, (), ()> for RelVarNameAssigner<'_> {
         // make sure it is not already present in current query
         while name
             .as_ref()
-            .map_or(true, |n| self.relation_instance_names.contains(n))
+            .is_none_or(|n| self.relation_instance_names.contains(n))
         {
             *name = Some(self.ctx.anchor.table_name.gen());
         }

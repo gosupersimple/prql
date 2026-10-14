@@ -1,4 +1,4 @@
-# This file has transitioning to run almost everything, with rules defined in
+# This file has transitioned to run almost everything, with rules defined in
 # this file rather than across lots of workflow files.
 name: tests
 
@@ -65,10 +65,10 @@ jobs:
 
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-tags: true
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
@@ -76,7 +76,7 @@ jobs:
               - .github/workflows/check-links-book.yaml
               - web/book/**
             dotnet:
-              - prqlc/bindings/prql-dotnet/**
+              - prqlc/bindings/dotnet/**
               - prqlc/bindings/prqlc-c/**
               - .github/workflows/test-dotnet.yaml
             devcontainer-push:
@@ -85,6 +85,7 @@ jobs:
               - Taskfile.yaml
             devcontainer-build:
               - .devcontainer/**/*Dockerfile
+              - .devcontainer/devcontainer.json
               - .github/workflows/build-devcontainer.yaml
               - Taskfile.yaml
             grammars:
@@ -110,7 +111,10 @@ jobs:
             nightly:
               - .github/workflows/nightly.yaml
               - .github/workflows/release.yaml
-              - Cargo.toml
+              # The build steps `release.yaml` runs, so a change to one is
+              # smoke-tested by the same nightly run.
+              - .github/actions/build-*/**
+              - "**/Cargo.toml"
               - Cargo.lock
               - rust-toolchain.toml
               - .cargo/**
@@ -171,19 +175,21 @@ jobs:
         run:
           echo "run=${{ steps.devcontainer-push.outputs.run == 'true' ||
           steps.changes.outputs.devcontainer-build == 'true' ||
-          steps.changes.outputs.nightly-upstream == 'true' }}" >>
-          "$GITHUB_OUTPUT"
+          steps.nightly-upstream.outputs.run == 'true' }}" >> "$GITHUB_OUTPUT"
 
   test-rust:
     needs: rules
     if: needs.rules.outputs.rust == 'true' || needs.rules.outputs.main == 'true'
     uses: ./.github/workflows/test-rust.yaml
+    secrets: inherit
     strategy:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
-            features: default,test-dbs-external
+            # `lsp` is off by default; include it here so the LSP stub's tests
+            # actually run somewhere.
+            features: default,test-dbs-external,lsp
           # Only run wasm on ubuntu, given it's the same rust target. (There is
           # a possibility of having a failure on just one platform, but it's
           # quite unlikely. If we do observe this, we can add those tests them
@@ -275,9 +281,9 @@ jobs:
   #   runs-on: macos-15
   #   steps:
   #     - name: 📂 Checkout code
-  #       uses: actions/checkout@v5
+  #       uses: actions/checkout@v7
   #     - run: ./.github/workflows/scripts/set_version.sh
-  #     - uses: actions/setup-python@v6
+  #     - uses: actions/setup-python@v7
   #       with:
   #         python-version: "3.11"
   #     - name: 💰 Cache
@@ -326,6 +332,7 @@ jobs:
           #   target: aarch64-unknown-linux-musl
 
     uses: ./.github/workflows/test-rust.yaml
+    secrets: inherit
     with:
       os: ${{ matrix.os }}
       target: ${{ matrix.target }}
@@ -342,6 +349,10 @@ jobs:
   publish-web:
     uses: ./.github/workflows/publish-web.yaml
     if: contains(github.event.pull_request.labels.*.name, 'pr-publish-web')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
 
   nightly:
     needs: rules
@@ -356,13 +367,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - uses: baptiste0928/cargo-install@v3
         with:
           crate: lychee
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -370,7 +381,7 @@ jobs:
         run: pip install pre-commit
 
       - name: Cache lychee results
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .lycheecache
           key: lychee-${{ github.sha }}
@@ -413,7 +424,7 @@ jobs:
 
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - uses: baptiste0928/cargo-install@v3
         with:
           crate: mdbook
@@ -432,6 +443,10 @@ jobs:
           shared-key: web
           # Created by `build-web`
           save-if: false
+          # Caching `~/.cargo/bin/` breaks the rustup `cargo`/`rustc` symlinks
+          # on the new macos-15 runner image — see
+          # https://github.com/Swatinem/rust-cache/issues/341.
+          cache-bin: "false"
       # Only build the book — rather than `build-web` which also builds the playground
       - name: Build the mdbook
         run: mdbook build web/book/
@@ -443,9 +458,9 @@ jobs:
     needs: rules
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - run: ./.github/workflows/scripts/set_version.sh
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - uses: baptiste0928/cargo-install@v3
@@ -456,6 +471,10 @@ jobs:
         with:
           prefix-key: ${{ env.version }}-${{ hashFiles('./Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Caching `~/.cargo/bin/` breaks the rustup `cargo`/`rustc` symlinks
+          # on the new macos-15 runner image — see
+          # https://github.com/Swatinem/rust-cache/issues/341.
+          cache-bin: "false"
       # Ensure nothing remains from caching
       - run: cargo llvm-cov clean --workspace
       - run:
@@ -466,7 +485,7 @@ jobs:
           cargo llvm-cov --cobertura --output-path=cobertura.xml
           --no-default-features --features=default,test-dbs
       - name: Upload code coverage results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: code-coverage-report
           path: cobertura.xml
@@ -491,7 +510,7 @@ jobs:
           # accuracy is important.
           ${{ github.repository_owner == 'prql' && github.event_name !=
           'schedule' }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: cobertura.xml
           fail_ci_if_error: true
@@ -506,8 +525,8 @@ jobs:
           token: cab4ace5-4f10-4027-8b5c-d79722234571
 
   test-grammars:
-    # Currently tests lezer grammars. We could split that out into a separate
-    # job if we want when we add more.
+    # Tests the lezer & raku grammars. We could split these into separate jobs
+    # if we want when we add more.
     runs-on: ubuntu-24.04
     needs: rules
     if:
@@ -515,7 +534,7 @@ jobs:
       'true'
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - name: 🧅 Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -523,17 +542,39 @@ jobs:
       - name: Install dependencies
         working-directory: grammars/prql-lezer/
         run: bun install
-      - name: Build grammar
+      - name: Build lezer grammar
         working-directory: grammars/prql-lezer/
         run: bun run build
-      - name: Test grammar
+      - name: Test lezer grammar
         working-directory: grammars/prql-lezer/
         run: bun run test
+      - name: 🦋 Setup Raku
+        uses: Raku/setup-raku@v1
+      # `prove6` is the TAP harness that runs the whole `t/` directory in one
+      # command, as `grammars/raku/README.md` documents. `zef` ships with the
+      # rakudo archive that `setup-raku` installs.
+      #
+      # `--/test` skips the test suites of `App::Prove6` and its transitive
+      # deps, which `zef` would otherwise run before installing. The README
+      # recipe deliberately omits it — a human installing locally wants those
+      # to run; here they'd only turn the job red for reasons unrelated to the
+      # PRQL grammar.
+      - name: Install prove6
+        run: zef install --/test App::Prove6
+      - name: Test raku grammar
+        working-directory: grammars/raku/
+        run: prove6 --lib t/
 
   build-devcontainer:
     needs: rules
-    if: needs.rules.outputs.devcontainer-build == 'true'
+    # Skip on dependabot PRs — they don't get access to the DOCKERHUB_*
+    # secrets, so the docker login step fails before the bumped action can be
+    # exercised.
+    if:
+      needs.rules.outputs.devcontainer-build == 'true' && github.actor !=
+      'dependabot[bot]'
     uses: ./.github/workflows/build-devcontainer.yaml
+    secrets: inherit
     # One problem with this setup is that if another commit is merged to main,
     # this workflow will cancel existing jobs, and so this won't get pushed. We
     # have another workflow which runs on each release, so the image should get
@@ -544,13 +585,30 @@ jobs:
       # This needs to compare to the string `'true'`, because of GHA awkwardness
       push: ${{ needs.rules.outputs.devcontainer-push == 'true' }}
 
+  test-devcontainer:
+    runs-on: ubuntu-24.04
+    needs: rules
+    if: needs.rules.outputs.devcontainer-build == 'true'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and run devcontainer
+        uses: devcontainers/ci@v0.3
+        with:
+          runCmd: |
+            set -euxo pipefail
+            task --version
+            pre-commit --version
+            cargo --version
+            node --version
+
   test-msrv:
     runs-on: ubuntu-24.04
     needs: rules
     if: needs.rules.outputs.nightly == 'true'
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - uses: baptiste0928/cargo-install@v3
         with:
           crate: cargo-msrv
@@ -571,9 +629,9 @@ jobs:
     if: needs.rules.outputs.nightly == 'true'
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - run: rustup override set nightly-2025-11-10
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - uses: baptiste0928/cargo-install@v3
@@ -588,6 +646,10 @@ jobs:
         with:
           prefix-key: ${{ env.version }}-${{ hashFiles('./Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Caching `~/.cargo/bin/` breaks the rustup `cargo`/`rustc` symlinks
+          # on the new macos-15 runner image — see
+          # https://github.com/Swatinem/rust-cache/issues/341.
+          cache-bin: "false"
       - name: Verify minimum rust version
         run: cargo minimal-versions test --direct
 
@@ -599,6 +661,7 @@ jobs:
     needs:
       - build-devcontainer
       - build-web
+      - test-devcontainer
       - check-links-book
       - check-links-markdown
       - lint-megalinter
@@ -644,6 +707,7 @@ jobs:
             [
               "build-devcontainer",
               "build-web",
+              "test-devcontainer",
               "check-links-book",
               "check-links-markdown",
               "lint-megalinter",
@@ -690,7 +754,7 @@ jobs:
             features: default
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - uses: ./.github/actions/build-prqlc
         with:
           target: ${{ matrix.target }}
@@ -723,7 +787,7 @@ jobs:
             features: default
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - uses: ./.github/actions/build-prqlc-c
         with:
           target: ${{ matrix.target }}
@@ -736,31 +800,6 @@ jobs:
       RUSTFLAGS: "-C debuginfo=0"
       RUSTDOCFLAGS: "-Dwarnings"
 
-  create-issue-on-nightly-failure:
-    runs-on: ubuntu-24.04
-    needs:
-      - check-ok-to-merge
-      - rules
-    if:
-      ${{ always() && contains(needs.*.result, 'failure') &&
-      needs.rules.outputs.nightly-upstream == 'true' }}
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: 📂 Checkout code
-        uses: actions/checkout@v5
-      - uses: JasonEtco/create-an-issue@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LINK:
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
-            github.run_id }}
-        with:
-          filename: .github/nightly-failure.md
-          update_existing: true
-          search_existing: open
-
   update-rust-toolchain:
     runs-on: ubuntu-24.04
     needs: rules
@@ -769,13 +808,19 @@ jobs:
     # default toolchain to run on. The minimum is defined by Cargo.toml's
     # metadata.msrv and is updated manually based on when build environments
     # such as debian & winget are updated.
+    #
+    # `TEND_BOT_TOKEN` lives in the `tend` environment, which admits only
+    # `main`; `nightly-upstream` is schedule-only, so the ref is always `main`.
+    environment:
+      name: tend
+      deployment: false
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
       - uses: a-kenji/update-rust-toolchain@main
         with:
           # Discussion in #1561
           minor-version-delta: 1
           toolchain-path: "./rust-toolchain.toml"
           pr-title: "build: Update rust toolchain version"
-          token: ${{ secrets.PRQL_BOT_GITHUB_TOKEN }}
+          token: ${{ secrets.TEND_BOT_TOKEN }}

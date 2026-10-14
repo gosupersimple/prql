@@ -1,7 +1,5 @@
 const std = @import("std");
-const prql = @cImport({
-    @cInclude("../c/prqlc.h");
-});
+const prql = @import("prqlc");
 
 pub fn main() !void {
     var target = "sql.mssql".*;
@@ -9,8 +7,7 @@ pub fn main() !void {
     const options = prql.Options{
         .format = false,
         .signature_comment = false,
-        //.target = &target,
-        .target = &target
+        .target = &target,
     };
 
     // Compile the PRQL query

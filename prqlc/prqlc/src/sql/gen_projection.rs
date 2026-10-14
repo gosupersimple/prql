@@ -40,7 +40,7 @@ pub(super) fn try_into_exprs(
         if let Some(excluded) = excluded.get(&cid) {
             if !excluded.is_empty() {
                 return Err(
-                    Error::new_simple("Excluding columns not supported as this position")
+                    Error::new_simple("Excluding columns not supported in this position")
                         .with_span(span),
                 );
             }
@@ -218,10 +218,13 @@ fn translate_exclude(
         .collect_vec();
 
     Some(match supported {
-        ColumnExclude::Exclude => WildcardAdditionalOptions {
-            opt_exclude: Some(ExcludeSelectItem::Multiple(excluded)),
-            ..Default::default()
-        },
+        ColumnExclude::Exclude => {
+            let excluded_object_names = excluded.into_iter().map(ObjectName::from).collect();
+            WildcardAdditionalOptions {
+                opt_exclude: Some(ExcludeSelectItem::Multiple(excluded_object_names)),
+                ..Default::default()
+            }
+        }
         ColumnExclude::Except => WildcardAdditionalOptions {
             opt_except: Some(ExceptSelectItem {
                 first_element: excluded.remove(0),

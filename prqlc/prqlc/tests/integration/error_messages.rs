@@ -1,6 +1,6 @@
 //! Test error messages. As of 2023-03, this can hopefully be expanded significantly.
 //! It's also fine to put errors by the things that they're testing.
-//! See also [test_bad_error_messages.rs](test_bad_error_messages.rs) for error
+//! See also [bad_error_messages.rs](bad_error_messages.rs) for error
 //! messages which need to be improved.
 use insta::assert_snapshot;
 
@@ -14,7 +14,7 @@ fn test_errors() {
     from x
     derive y = (addadd 4 5 6)
     "###).unwrap_err(),
-        @r"
+        @"
     Error:
        ╭─[ :5:17 ]
        │
@@ -27,7 +27,7 @@ fn test_errors() {
     assert_snapshot!(compile(r###"
     from a select b
     "###).unwrap_err(),
-        @r"
+        @"
     Error:
        ╭─[ :2:5 ]
        │
@@ -42,7 +42,7 @@ fn test_errors() {
     select a
     select b
     "###).unwrap_err(),
-        @r"
+        @"
     Error:
        ╭─[ :4:12 ]
        │
@@ -58,7 +58,7 @@ fn test_errors() {
     from employees
     take 1.8
     "###).unwrap_err(),
-        @r"
+        @"
     Error:
        ╭─[ :3:10 ]
        │
@@ -88,7 +88,7 @@ fn test_errors() {
     "#);
 
     // PARSER output (full compilation error):
-    assert_snapshot!(compile(mississippi).unwrap_err(), @r"
+    assert_snapshot!(compile(mississippi).unwrap_err(), @"
     Error:
        ╭─[ :1:23 ]
        │
@@ -98,7 +98,7 @@ fn test_errors() {
     ───╯
     ");
 
-    assert_snapshot!(compile("Answer: T-H-A-T!").unwrap_err(), @r"
+    assert_snapshot!(compile("Answer: T-H-A-T!").unwrap_err(), @"
     Error:
        ╭─[ :1:16 ]
        │
@@ -117,7 +117,7 @@ fn test_union_all_sqlite() {
 
     from film
     remove film2
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error: The dialect SQLiteDialect does not support EXCEPT ALL
     ↳ Hint: providing more column information will allow the query to be translated to an anti-join.
     ")
@@ -129,7 +129,7 @@ fn test_regex_dialect() {
     prql target:sql.mssql
     from foo
     filter bar ~= 'love'
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :4:12 ]
        │
@@ -147,7 +147,7 @@ fn test_bad_function_type() {
     group foo (take)
     "###,
     )
-    .unwrap_err(), @r"
+    .unwrap_err(), @"
     Error:
        ╭─[ :3:16 ]
        │
@@ -187,7 +187,7 @@ fn test_ambiguous() {
     derive date = x
     select date
     "#)
-    .unwrap_err(), @r"
+    .unwrap_err(), @"
     Error:
        ╭─[ :4:12 ]
        │
@@ -195,7 +195,7 @@ fn test_ambiguous() {
        │            ──┬─
        │              ╰─── Ambiguous name
        │
-       │ Help: could be any of: std.date, this.date
+       │ Help: could be any of: std.date, std.types.date, this.date
        │
        │ Note: available columns: date
     ───╯
@@ -210,7 +210,7 @@ fn test_ambiguous_join() {
     join (from b | select {x}) true
     select x
     "#)
-    .unwrap_err(), @r"
+    .unwrap_err(), @"
     Error:
        ╭─[ :5:12 ]
        │
@@ -232,7 +232,7 @@ fn test_ambiguous_inference() {
     join b(==b_id)
     select x
     "#)
-    .unwrap_err(), @r"
+    .unwrap_err(), @"
     Error:
        ╭─[ :4:12 ]
        │
@@ -268,7 +268,7 @@ fn date_to_text_with_column_format() {
   from dates_to_display
   select {my_date, my_format}
   select {std.date.to_text my_date my_format}
-  "#).unwrap_err(), @r"
+  "#).unwrap_err(), @"
     Error:
        ╭─[ :4:11 ]
        │
@@ -285,7 +285,7 @@ fn date_trunc_with_column_unit() {
   from dates_to_display
   select {my_date, my_unit}
   select {std.date.trunc my_unit my_date}
-  "#).unwrap_err(), @r"
+  "#).unwrap_err(), @"
     Error:
        ╭─[ :4:11 ]
        │
@@ -321,7 +321,7 @@ fn available_columns() {
     from invoices
     select foo
     select bar
-    "#).unwrap_err(), @r"
+    "#).unwrap_err(), @"
     Error:
        ╭─[ :4:12 ]
        │
@@ -350,20 +350,16 @@ fn empty_interpolations() {
 #[test]
 fn no_query_entered() {
     // Empty query
-    assert_snapshot!(compile("").unwrap_err(), @r"
-    [E0001] Error: No PRQL query entered
-    ");
+    assert_snapshot!(compile("").unwrap_err(), @"[E0001] Error: No PRQL query entered");
 
     // Comment-only query
-    assert_snapshot!(compile("# just a comment").unwrap_err(), @r"
-    [E0001] Error: No PRQL query entered
-    ");
+    assert_snapshot!(compile("# just a comment").unwrap_err(), @"[E0001] Error: No PRQL query entered");
 }
 
 #[test]
 fn query_must_begin_with_from() {
     // Query with declaration but no 'from'
-    assert_snapshot!(compile("let x = 5").unwrap_err(), @r"
+    assert_snapshot!(compile("let x = 5").unwrap_err(), @"
     [E0001] Error: PRQL queries must begin with 'from'
     ↳ Hint: A query must start with a 'from' statement to define the main pipeline
     ");
@@ -372,7 +368,7 @@ fn query_must_begin_with_from() {
     assert_snapshot!(compile(r#"
     let x = 5
     let y = 10
-    "#).unwrap_err(), @r"
+    "#).unwrap_err(), @"
     [E0001] Error: PRQL queries must begin with 'from'
     ↳ Hint: A query must start with a 'from' statement to define the main pipeline
     ");
@@ -384,7 +380,7 @@ fn negative_number_in_transform() {
     assert_snapshot!(compile(r###"
     from artists
     sort -name
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error: expected a pipeline that resolves to a table, but found `internal std.sub`
     ↳ Hint: wrap negative numbers in parentheses, e.g. `sort (-column_name)`
     ");
@@ -392,7 +388,7 @@ fn negative_number_in_transform() {
     assert_snapshot!(compile(r###"
     from pets
     take -10
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error: expected a pipeline that resolves to a table, but found `internal std.sub`
     ↳ Hint: wrap negative numbers in parentheses, e.g. `sort (-column_name)`
     ");
@@ -402,7 +398,7 @@ fn negative_number_in_transform() {
   group id (
     sort -val
   )
-  "###).unwrap_err(), @r"
+  "###).unwrap_err(), @"
     Error: expected a pipeline that resolves to a table, but found `internal std.sub`
     ↳ Hint: wrap negative numbers in parentheses, e.g. `sort (-column_name)`
     ");
@@ -412,7 +408,7 @@ fn negative_number_in_transform() {
 fn empty_tuple_or_array_from() {
     assert_snapshot!(compile(r###"
     from {}
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :2:10 ]
        │
@@ -424,7 +420,7 @@ fn empty_tuple_or_array_from() {
 
     assert_snapshot!(compile(r###"
     from []
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :2:10 ]
        │
@@ -437,7 +433,7 @@ fn empty_tuple_or_array_from() {
     assert_snapshot!(compile(r###"
     from {}
     select a
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :2:10 ]
        │
@@ -454,7 +450,7 @@ fn window_rows_expects_range() {
     assert_snapshot!(compile(r###"
     from t
     group sid (window rows:2 (sid))
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :3:28 ]
        │
@@ -467,7 +463,7 @@ fn window_rows_expects_range() {
     assert_snapshot!(compile(r###"
     from t
     group sid (window range:2 (sid))
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :3:29 ]
        │
@@ -484,13 +480,406 @@ fn bare_lambda_expression() {
     // a clear error, not a confusing internal message.
     assert_snapshot!(compile(r###"
     x -> y
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :2:5 ]
        │
      2 │     x -> y
        │     ───┬──
        │        ╰──── expected a table, but found a function
+    ───╯
+    ");
+}
+
+#[test]
+fn enum_type_1() {
+    assert_snapshot!(compile(r#"
+    enum Status { Paid = "paid", Unpaid = "unpaid" }
+    from invoices | filter status = Status.Canceled
+    "#).unwrap_err(), @"
+    Error:
+       ╭─[ :3:37 ]
+       │
+     3 │     from invoices | filter status = Status.Canceled
+       │                                     ───────┬───────
+       │                                            ╰───────── Unknown name `Status.Canceled`
+    ───╯
+    ");
+}
+
+#[test]
+fn enum_type_2() {
+    assert_snapshot!(compile(r###"
+    enum InvoiceStatus { Paid = 0, Unpaid = 1, Canceled = 2 }
+
+    let filter_status = func status <InvoiceStatus> tbl <relation> -> (
+        filter (this.status == _param.status) tbl
+    )
+
+    from invoices
+    filter_status 1
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :9:19 ]
+       │
+     9 │     filter_status 1
+       │                   ┬
+       │                   ╰── function filter_status, param `status` expected type `InvoiceStatus`, but found type `int`
+       │
+       │ Help: Type `InvoiceStatus` expands to `enum {Paid = 0, Unpaid = 1, Canceled = 2}`
+    ───╯
+    ");
+}
+
+/// An `enum` builds a module and so used to take a different insertion path
+/// than every other statement kind, which meant it replaced a name that was
+/// already declared instead of reporting the collision.
+///
+/// Only the direction where the `enum` comes second is covered — a `module`
+/// declared after an `enum` (or after another `module`) still overwrites
+/// silently, since `fold_module_def_stmt` keeps its own `Module::insert`; #6166
+/// tracks that.
+#[test]
+fn enum_duplicate_of_existing_declaration() {
+    assert_snapshot!(compile(r###"
+    let Status = 5
+    enum Status { Paid = 0 }
+    from invoices
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :2:19 ]
+       │
+     2 │ ╭─▶     let Status = 5
+     3 │ ├─▶     enum Status { Paid = 0 }
+       │ │
+       │ ╰────────────────────────────────── duplicate declarations of Status
+    ───╯
+    ");
+
+    assert_snapshot!(compile(r###"
+    module m { let a = 5 }
+    enum m { Paid = 0 }
+    from invoices
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :2:27 ]
+       │
+     2 │ ╭─▶     module m { let a = 5 }
+     3 │ ├─▶     enum m { Paid = 0 }
+       │ │
+       │ ╰───────────────────────────── duplicate declarations of m
+    ───╯
+    ");
+
+    assert_snapshot!(compile(r###"
+    enum Status { Paid = 0 }
+    enum Status { Unpaid = 1 }
+    from invoices
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :2:29 ]
+       │
+     2 │ ╭─▶     enum Status { Paid = 0 }
+     3 │ ├─▶     enum Status { Unpaid = 1 }
+       │ │
+       │ ╰──────────────────────────────────── duplicate declarations of Status
+    ───╯
+    ");
+}
+
+/// The enum's members become entries in a map, so a repeated name — or one that
+/// collides with the `_self` entry holding the type itself — used to leave only
+/// the last value with no diagnostic.
+#[test]
+fn enum_duplicate_member() {
+    assert_snapshot!(compile(r###"
+    enum Status { Paid = 0, Paid = 1 }
+    from invoices
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :2:36 ]
+       │
+     2 │     enum Status { Paid = 0, Paid = 1 }
+       │                                    ┬
+       │                                    ╰── duplicate declarations of Status.Paid
+    ───╯
+    ");
+
+    assert_snapshot!(compile(r###"
+    enum Status { _self = 0, Paid = 1 }
+    from invoices
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :2:27 ]
+       │
+     2 │     enum Status { _self = 0, Paid = 1 }
+       │                           ┬
+       │                           ╰── `_self` is a reserved name and cannot be an enum member
+    ───╯
+    ");
+}
+
+#[test]
+fn append_by_wrong() {
+    assert_snapshot!(compile(r###"
+    from foo
+    append by:bar baz
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :3:15 ]
+       │
+     3 │     append by:bar baz
+       │               ─┬─
+       │                ╰─── Ambiguous name
+       │
+       │ Help: could be any of: that.baz.bar, this.foo.bar
+       │
+       │ Note: perhaps you meant one of: position, name
+    ───╯
+    ");
+}
+
+#[test]
+fn tuple_uniq_take_wrong() {
+    assert_snapshot!(compile(r###"
+    from foo
+    select (tuple_uniq take:bar this)
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :3:29 ]
+       │
+     3 │     select (tuple_uniq take:bar this)
+       │                             ─┬─
+       │                              ╰─── `take` expected early or late, but found `this.foo.bar`
+    ───╯
+    ");
+}
+
+/// The other three transforms that resolve a parameter to a literal report the
+/// parameter name the same way. An s-string reaches the cast without being a
+/// literal, which is the path that produces these.
+#[test]
+fn transform_param_not_a_literal() {
+    assert_snapshot!(compile(r###"
+    from x
+    join y (==id) side:s"left"
+    "###).unwrap_err(), @r#"
+    Error:
+       ╭─[ :3:24 ]
+       │
+     3 │     join y (==id) side:s"left"
+       │                        ───┬───
+       │                           ╰───── `side` expected inner, left, right or full, but found `s"left"`
+    ───╯
+    "#);
+
+    assert_snapshot!(compile(r###"
+    from foo
+    append by:s"name" baz
+    "###).unwrap_err(), @r#"
+    Error:
+       ╭─[ :3:15 ]
+       │
+     3 │     append by:s"name" baz
+       │               ───┬───
+       │                  ╰───── `by` expected position or name, but found `s"name"`
+    ───╯
+    "#);
+
+    assert_snapshot!(compile(r###"
+    from_text format:s"csv" "a,b"
+    "###).unwrap_err(), @r#"
+    Error:
+       ╭─[ :2:22 ]
+       │
+     2 │     from_text format:s"csv" "a,b"
+       │                      ───┬──
+       │                         ╰──── `format` expected csv or json, but found `s"csv"`
+    ───╯
+    "#);
+}
+
+#[test]
+fn append_by_name_wildcard() {
+    assert_snapshot!(compile(r"from foo | append by:name (from bar)").unwrap_err(), @"
+    Error:
+       ╭─[ :1:1 ]
+       │
+     1 │ from foo | append by:name (from bar)
+       │ ────┬───
+       │     ╰───── top input to append by:name must have all columns defined
+       │
+       │ Help: try adding a select earlier in the pipeline
+    ───╯
+    ");
+}
+
+#[test]
+fn append_by_name_unnamed() {
+    assert_snapshot!(compile(r###"
+    from foo
+    select {x, y}
+    append by:name (from bar | select {x, y+3})
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :4:32 ]
+       │
+     4 │     append by:name (from bar | select {x, y+3})
+       │                                ───────┬───────
+       │                                       ╰───────── bottom input to append by:name must not have any unnamed columns
+    ───╯
+    ");
+}
+
+#[test]
+fn missing_argument_hint_without_function_name() {
+    // The hint's fallback branch (no name hint on the function type) shouldn't
+    // end up with a doubled `?`.
+    assert_snapshot!(compile(r"from x | select (std.not)").unwrap_err(), @"
+    Error:
+       ╭─[ :1:10 ]
+       │
+     1 │ from x | select (std.not)
+       │          ────────┬───────
+       │                  ╰───────── main expected type `relation`, but found type `func ? -> ?`
+       │
+       │ Help: Argument might be missing in this function call?
+       │
+       │ Note: Type `relation` expands to `[{..}]`
+    ───╯
+    ");
+}
+
+#[test]
+fn not_with_extra_args() {
+    // A tuple argument to `std.not` is column-exclusion syntax, but only when
+    // it's the sole argument — extra args used to panic on `exactly_one`.
+    assert_snapshot!(compile(r"from x | select (std.not {a} b)").unwrap_err(), @"
+    Error:
+       ╭─[ :1:18 ]
+       │
+     1 │ from x | select (std.not {a} b)
+       │                  ──────┬──────
+       │                        ╰──────── Too many arguments to function `not`
+    ───╯
+    ");
+    assert_snapshot!(compile(r"from x | select (std.not {a} {b})").unwrap_err(), @"
+    Error:
+       ╭─[ :1:18 ]
+       │
+     1 │ from x | select (std.not {a} {b})
+       │                  ───────┬───────
+       │                         ╰───────── Too many arguments to function `not`
+    ───╯
+    ");
+}
+
+#[test]
+fn unknown_named_arg() {
+    // A named argument that no parameter matches names the function and points
+    // at the call site.
+    assert_snapshot!(compile(r"from x | select (std.not {a} b:1)").unwrap_err(), @"
+    Error:
+       ╭─[ :1:18 ]
+       │
+     1 │ from x | select (std.not {a} b:1)
+       │                  ───────┬───────
+       │                         ╰───────── unknown named argument `b` to function `not`
+    ───╯
+    ");
+    assert_snapshot!(compile(r"from x | select (std.not b:1)").unwrap_err(), @"
+    Error:
+       ╭─[ :1:18 ]
+       │
+     1 │ from x | select (std.not b:1)
+       │                  ─────┬─────
+       │                       ╰─────── unknown named argument `b` to function `not`
+    ───╯
+    ");
+    assert_snapshot!(compile(r"from x | take 1 b:2").unwrap_err(), @"
+    Error:
+       ╭─[ :1:10 ]
+       │
+     1 │ from x | take 1 b:2
+       │          ─────┬────
+       │               ╰────── unknown named argument `b` to function `take`
+    ───╯
+    ");
+}
+
+#[test]
+fn test_error_after_non_ascii() {
+    // Multi-byte chars before an error mustn't shift its label, or push the
+    // span past the end of the source.
+    assert_snapshot!(compile(r#"
+    from t
+    derive {x = "éééééééééé"}
+    select {x, foo.bar.baz}
+    "#).unwrap_err(), @"
+    Error:
+       ╭─[ :4:16 ]
+       │
+     4 │     select {x, foo.bar.baz}
+       │                ─────┬─────
+       │                     ╰─────── Unknown name `foo.bar.baz`
+       │
+       │ Help: available columns: x
+    ───╯
+    ");
+
+    assert_snapshot!(compile(r#"
+    # café
+    from t
+    select {foo.bar.baz}
+    "#).unwrap_err(), @"
+    Error:
+       ╭─[ :4:13 ]
+       │
+     4 │     select {foo.bar.baz}
+       │             ─────┬─────
+       │                  ╰─────── Unknown name `foo.bar.baz`
+    ───╯
+    ");
+
+    assert_snapshot!(compile(r#"
+    from t
+    derive {x = f"éééé{foo.}"}
+    "#).unwrap_err(), @r#"
+    Error:
+       ╭─[ :3:28 ]
+       │
+     3 │     derive {x = f"éééé{foo.}"}
+       │                            ┬
+       │                            ╰── expected interpolated string or interp:backticks, but found "}"
+    ───╯
+    "#);
+}
+
+#[test]
+fn test_relation_literal_invalid_shape() {
+    // Previously panicked in lowering on an unnamed column.
+    assert_snapshot!(compile(r###"
+    from [{1}]
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :2:5 ]
+       │
+     2 │     from [{1}]
+       │     ─────┬────
+       │          ╰────── relation literal columns require names
+    ───╯
+    ");
+
+    // Previously panicked in lowering on a row that isn't a tuple.
+    assert_snapshot!(compile(r###"
+    from [{a = 1}, 3]
+    "###).unwrap_err(), @"
+    Error:
+       ╭─[ :2:20 ]
+       │
+     2 │     from [{a = 1}, 3]
+       │                    ┬
+       │                    ╰── relation literal expected tuples, but found `3`
     ───╯
     ");
 }

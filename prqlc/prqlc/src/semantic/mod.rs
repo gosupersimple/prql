@@ -7,9 +7,9 @@ pub mod reporting;
 mod resolver;
 
 pub use lowering::lower_to_ir;
+pub(crate) use lowering::missing_main_error;
 
 use self::resolver::Resolver;
-pub use self::resolver::ResolverOptions;
 use crate::ir::decl::{Module, RootModule};
 use crate::ir::pl::{self, ImportDef, ModuleDef, Stmt, StmtKind, TypeDef, VarDef};
 use crate::ir::rq::RelationalQuery;
@@ -18,6 +18,8 @@ use crate::pr;
 use crate::WithErrorInfo;
 use crate::{debug, parser};
 use crate::{Error, Reason, Result};
+
+pub const STD_LIB_SOURCE_ID: u16 = 0;
 
 /// Runs semantic analysis on the query and lowers PL to RQ.
 pub fn resolve_and_lower(
@@ -67,7 +69,7 @@ pub fn load_std_lib(module_tree: &mut pr::ModuleDef) {
         let _suppressed = debug::log_suppress();
 
         let std_source = include_str!("std.prql");
-        match parser::parse_source(std_source, 0) {
+        match parser::parse_source(std_source, STD_LIB_SOURCE_ID) {
             Ok(stmts) => {
                 let stmt = pr::Stmt::new(pr::StmtKind::ModuleDef(pr::ModuleDef {
                     name: "std".to_string(),
@@ -191,7 +193,7 @@ pub mod test {
         window range:-4..4 (
             derive {next_four_days = sum b}
         )
-        "###).unwrap().relation.columns, @r"
+        "###).unwrap().relation.columns, @"
         - Single: day
         - Single: b
         - Wildcard
@@ -205,9 +207,24 @@ pub mod test {
         from a=albums
         filter is_sponsored
         select {a.*}
-        "###).unwrap().relation.columns, @r"
+        "###).unwrap().relation.columns, @"
         - Single: is_sponsored
         - Wildcard
+        ")
+    }
+
+    #[test]
+    fn test_resolve_this_wildcard() {
+        // `this.*` should include computed columns, matching bare `this`
+        // (https://github.com/PRQL/prql/issues/6044).
+        assert_yaml_snapshot!(parse_resolve_and_lower(r###"
+        from foo
+        select { a, b, c = a + b }
+        select this.*
+        "###).unwrap().relation.columns, @"
+        - Single: a
+        - Single: b
+        - Single: c
         ")
     }
 
@@ -216,7 +233,7 @@ pub mod test {
         assert_yaml_snapshot!(parse_resolve_and_lower(r###"
         from x
         select {a, a, a = a + 1}
-        "###).unwrap().relation.columns, @r"
+        "###).unwrap().relation.columns, @"
         - Single: ~
         - Single: ~
         - Single: a
@@ -229,7 +246,7 @@ pub mod test {
         prql target:sql.mssql version:"0"
 
         from employees
-        "#).unwrap(), @r"
+        "#).unwrap(), @"
         def:
           version: ^0
           other:

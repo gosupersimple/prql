@@ -15,6 +15,14 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    // Translate the C header into a Zig module, which `src/main.zig` imports as
+    // `prqlc`.
+    const prqlc = b.addTranslateC(.{
+        .root_source_file = b.path("c/prqlc.h"),
+        .target = target,
+        .optimize = optimize,
+    }).createModule();
+
     const exe = b.addExecutable(.{
         .name = "minimal-zig",
         // In this case the main source file is merely a path, however, in more
@@ -23,13 +31,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "prqlc", .module = prqlc },
+            },
         }),
     });
-    exe.addIncludePath(b.path("src"));
-    exe.addLibraryPath(b.path("c"));
+    exe.root_module.addLibraryPath(b.path("c"));
     exe.installHeader(b.path("c/prqlc.h"), "prqlc.h");
-    exe.linkSystemLibrary("prqlc_c");
-    exe.linkLibC();
+    exe.root_module.linkSystemLibrary("prqlc_c", .{});
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -49,9 +59,7 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     // This creates a build step. It will be visible in the `zig build --help` menu,
     // and can be selected like this: `zig build run`
@@ -66,13 +74,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "prqlc", .module = prqlc },
+            },
         }),
     });
-    unit_tests.addIncludePath(b.path("src"));
-    unit_tests.addLibraryPath(b.path("c"));
+    unit_tests.root_module.addLibraryPath(b.path("c"));
     unit_tests.installHeader(b.path("c/prqlc.h"), "prqlc.h");
-    unit_tests.linkSystemLibrary("prqlc_c");
-    unit_tests.linkLibC();
+    unit_tests.root_module.linkSystemLibrary("prqlc_c", .{});
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
 

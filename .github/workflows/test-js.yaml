@@ -29,12 +29,14 @@ jobs:
         os: ${{ fromJSON(inputs.oss) }}
     steps:
       - name: 📂 Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
-          node-version: "21.x"
+          # mocha 12 requires `^20.19.0 || >=22.12.0`; Node 21 falls in the gap
+          # and is EOL. Matches the pin in `.github/actions/build-js`.
+          node-version: "24.x"
 
       - uses: baptiste0928/cargo-install@v3
         with:
@@ -62,6 +64,10 @@ jobs:
           # we're out of cache space.
           shared-key: web
           save-if: false
+          # Caching `~/.cargo/bin/` breaks the rustup `cargo`/`rustc` symlinks
+          # on the new macos-15 runner image — see
+          # https://github.com/Swatinem/rust-cache/issues/341.
+          cache-bin: "false"
 
       - run: npm cit
         working-directory: prqlc/bindings/js

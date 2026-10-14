@@ -246,7 +246,7 @@ pub(crate) mod external {
             self.protocol.execute(
                 &format!(
                     "LOAD DATA INFILE '{}' INTO TABLE {table_name} FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"' LINES TERMINATED BY '\n' IGNORE 1 ROWS;",
-                    &csv_path_binding.parent().unwrap().join(local_new_path.file_name().unwrap()).to_str().unwrap()
+                    csv_path_binding.parent().unwrap().join(local_new_path.file_name().unwrap()).to_str().unwrap()
                 )
             ).unwrap();
             fs::remove_file(&local_new_path).unwrap();
@@ -370,50 +370,6 @@ pub(crate) mod external {
             sql.replace("TIMESTAMP", "DATETIME")
                 .replace("FLOAT", "FLOAT(53)")
                 .replace(" AS TEXT", " AS VARCHAR")
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) struct GlareDbTestRunner {
-        protocol: connector_arrow::postgres::PostgresConnection,
-        data_file_root: String,
-    }
-
-    impl GlareDbTestRunner {
-        #[allow(dead_code)]
-        pub(crate) fn new(url: &str, data_file_root: String) -> Self {
-            use connector_arrow::postgres::PostgresConnection;
-            let client = ::postgres::Client::connect(url, ::postgres::NoTls).unwrap();
-            Self {
-                protocol: PostgresConnection::new(client),
-                data_file_root,
-            }
-        }
-    }
-
-    impl DbTestRunner for GlareDbTestRunner {
-        fn dialect(&self) -> Dialect {
-            Dialect::GlareDb
-        }
-
-        fn protocol(&mut self) -> &mut dyn DbProtocol {
-            &mut self.protocol
-        }
-
-        fn data_file_root(&self) -> &str {
-            &self.data_file_root
-        }
-
-        fn import_csv(&mut self, csv_path: &str, table_name: &str) {
-            self.protocol
-                .execute(&format!(
-                    "INSERT INTO {table_name} SELECT * FROM '{csv_path}'"
-                ))
-                .unwrap();
-        }
-
-        fn modify_ddl(&self, sql: String) -> String {
-            sql.replace("FLOAT", "DOUBLE PRECISION")
         }
     }
 }

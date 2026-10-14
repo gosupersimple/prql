@@ -8,8 +8,16 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore: "
-    # Bump all patch versions of rust dependencies as a single PR
     groups:
+      # `pyo3-build-config` is released in lockstep with `pyo3` and expects to
+      # be on the same version, but ungrouped Dependabot raises a PR for each:
+      # #6258 bumped the helper alone while `pyo3` stayed two minors behind.
+      # Listed before `patch` because a dependency joins its first match.
+      pyo3:
+        patterns:
+          - "pyo3"
+          - "pyo3-build-config"
+      # Bump all patch versions of rust dependencies as a single PR
       patch:
         update-types:
           - patch
@@ -39,16 +47,29 @@ updates:
     labels: []
 
   - package-ecosystem: "github-actions"
+    # `/` only covers `.github/workflows/`; each composite action under
+    # `.github/actions/` needs its own entry or its `uses:` refs are never
+    # scanned. Keep this list in sync with `ls .github/actions/`.
     directories:
       - "/"
-      - ".github/actions/build-python"
+      - ".github/actions/build-js"
       - ".github/actions/build-prqlc"
       - ".github/actions/build-prqlc-c"
+      - ".github/actions/build-python"
+      - ".github/actions/tend-setup"
       - ".github/actions/time-compilation"
     commit-message:
       prefix: "chore: "
     schedule:
       interval: daily
+    ignore:
+      # tend's own action is updated by the nightly `tend/update-workflows`
+      # regen (`uvx tend init`), which follows structural changes a version-only
+      # Dependabot bump can't — e.g. the 0.1.7 move that split the action into
+      # `claude/` / `codex/` subdirectories, leaving the bare `max-sixty/tend@0.1.7`
+      # ref with no `action.yaml` and breaking every workflow (see #6031).
+      # Excluding it here avoids redundant (and sometimes broken) duplicate PRs.
+      - dependency-name: "max-sixty/tend"
     labels: []
 
   - package-ecosystem: uv

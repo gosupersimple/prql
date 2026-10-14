@@ -1,8 +1,9 @@
 # Type system
 
-> Status: under development
-
-> The type system determines the allowed values of a term.
+<!-- prettier-ignore -->
+> [!WARNING]
+> The PRQL type system is currently in flux. Not all intended features are
+> currently implemented.
 
 ## Purpose
 
@@ -14,7 +15,7 @@ Unix timestamps. So it does support most of what is possible to do with dates in
 other dialects, even though it stores data with a different physical layout and
 uses different functions to achieve that.
 
-PRQL's task is to define it's own description of _data formats_, just as how it
+PRQL's task is to define its own description of _data formats_, just as how it
 already defines common _data transformations_.
 
 This is done in two steps:
@@ -69,7 +70,7 @@ would be a row, since it can contain different types, all at once. Sum would be
 harder to express, see
 [this post](https://www.parsonsmatt.org/2019/03/19/sum_types_in_sql.html).
 
-The value proposition here is that algebraic types give a lot modeling
+The value proposition here is that algebraic types give a lot of modeling
 flexibility, all while being conceptually simple.
 
 **Composable** - as with transformation, we'd want types to compose together.
@@ -93,7 +94,7 @@ between tuples, objects and structs. A single product type is enough.
 
 Subtyping is a natural extension to a type system, where a type can be a super
 type of some other type. This is base mechanism for Object Oriented Programming,
-but is also present in most dynamically types languages. For example, a type
+but is also present in most dynamically typed languages. For example, a type
 `number` might be super type of `int` and `float`.
 
 PTS does not have subtyping, because it requires dynamic dispatch and because it
@@ -152,7 +153,7 @@ In other languages, similar constructs are named record, struct, tuple, named
 tuple or (data)class.
 
 ```
-type my_row = {id = int, bool, name = str}
+type my_row = {id = int, bool, name = text}
 ```
 
 ### Arrays
@@ -164,11 +165,23 @@ at compile-time. All fields are of the same type and cannot be named.
 type array_of_int = [int]
 ```
 
+### Simple Enumerations
+
+A simple enumeration is a type with an associated "literal tuple" (a tuple with
+all fields having names and literal values).
+
+```
+enum Status { Paid = 0, Unpaid = 1, Cancelled = 2 }
+```
+
 ### Functions
 
 ```
 type floor_signature = func float -> int
 ```
+
+<!--
+> Type unions were removed in #5111.
 
 ### Union
 
@@ -181,32 +194,75 @@ type status = (
 ```
 
 This is "a sum type".
+-->
 
 ## Type annotations
 
 Variable annotations and function parameters may specify type annotations:
 
+The value of `x` (and thus `a`) must be an element of `t`.
+
 ```
 let a <t> = x
 ```
 
-The value of `x` (and thus `a`) must be an element of `t`.
+The value of argument supplied to `x` and `y` (named argument with a default)
+must be an element of `t`.
 
 ```
-let my_func = func x <t> -> y
+let my_func = func x <t> y <t>:default -> z
 ```
 
-The value of argument supplied to `x` must be an element of `t`.
+The value of function body `y` must be an element of `t`.
 
 ```
 let my_func = func x -> <t> y
 ```
 
-The value of function body `y` must be an element of `t`.
+### Simple enumeration function parameters
+
+When a simple enumeration is used as a type on a function parameter, the value
+of the parameter will be required to be a member of the enumeration.
+
+```prql
+enum Status {
+    Paid = 0,
+    Unpaid = 1,
+    Cancelled = 2
+}
+
+let filter_status = func
+    status <Status>
+    tbl <relation> -> (
+    filter (this.status == _param.status) tbl
+)
+
+from invoices
+filter_status Status.Paid
+```
+
+You can also specify just the name of the enumeration member.
+
+```prql
+enum Status {
+    Paid = 0,
+    Unpaid = 1,
+    Cancelled = 2
+}
+
+let filter_status = func
+    status <Status>
+    tbl <relation> -> (
+    filter (this.status == _param.status) tbl
+)
+
+from invoices
+filter_status Unpaid
+```
 
 ## Physical layout
 
-_Logical type_ is user-facing the notion of a type that is the building block of
+_Logical type_ is the user-facing notion of a type that is the building block of
 the type system.
 
 _Physical layout_ is the underlying memory layout of the data represented by a
@@ -220,7 +276,7 @@ dependent on representation of that type in the target STS.
 PTS logical type  --->  STS logical type  ---> STS physical layout
 ```
 
-Note that not all STS types do not have a single physical layout. Postgres has a
+Note that not all STS types have a single physical layout. Postgres has a
 logical (pseudo)type `anyelement`, which is a super type of any data type. It
 can be used as a function parameter type, but does not have a single physical
 layout so it cannot be used in a column declaration.
@@ -235,7 +291,12 @@ DBMSs, since the physical layout of the result will vary.
 In the future, PRQL may define a common physical layout of types, probably using
 Apache Arrow.
 
-## Examples
+## Design Examples
+
+<!-- prettier-ignore -->
+> [!WARNING]
+> The examples below are not currently supported, and are retained for design
+> intent. Future implementations may or may not conform to this design.
 
 ```
 type my_relation = [{
@@ -265,7 +326,7 @@ type invoices = [{
 This document mentions `int32` and `int64` as distinct types, but there is no
 need for that in the initial implementation. The built-in `int` can associate
 with all operations on integers and translate PRQL to valid SQL regardless of
-the size of the integer. Later, `int` cam be replaced by `int8`, `int16`,
+the size of the integer. Later, `int` can be replaced by `int8`, `int16`,
 `int32`, `int64`.
 
 The general rule for "when to make a distinction between types" would be "as
@@ -305,15 +366,15 @@ table foo {
 ```
 
 A similar example is an "array of strings type" in PTS that could be represented
-by a `text[]` (if DBMS supports arrays) or `json` or it's variant `jsonb` in
+by a `text[]` (if DBMS supports arrays) or `json` or its variant `jsonb` in
 Postgres. Again, the representation would affect operators: in Postgres, arrays
 would be accessed with `my_array[1]` and json arrays would use
 `my_json_array -> 1`. This example may not be applicable, if we decide that we
-want a separate JSON type in PST.
+want a separate JSON type in PTS.
 
 ### RQ functions, targets and reprs
 
-> This part is talks about technical implementations, not the language itself
+> This part talks about technical implementations, not the language itself
 
 #### Idea
 
@@ -372,7 +433,7 @@ The logical type `int8` could have the following two reprs:
 Now we'd implement function `std.int8.add` for each of the reprs. Let's assume
 that the `int8` implementation is straightforward and that databases don't just
 change the data type when a number overflows. The impl for `int64` requires a
-CASE statement that checks if the value would overflow and subtact 256 in that
+CASE statement that checks if the value would overflow and subtract 256 in that
 case.
 
 The goal here is that the results of the two impls are equivalent. To validate

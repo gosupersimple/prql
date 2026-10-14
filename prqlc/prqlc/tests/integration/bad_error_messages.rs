@@ -4,10 +4,10 @@
 //! experienced contributors who would like a quick issue to fix:
 //! - Find where the error is being raised now, generally just search for a part
 //!   of the message.
-//! - Add `` macros to the code to see what's going on.
+//! - Add `dbg` macros to the code to see what's going on.
 //! - Write a better message / find a better place to raise a message.
 //! - Run `cargo insta test --accept`, and move the test out of this file into
-//!   `test_error_messages.rs`. If it's only partially solved, add a TODO and
+//!   `error_messages.rs`. If it's only partially solved, add a TODO and
 //!   make a call for where it should go.
 //!
 //! Adding bad error messages here is also a welcome contribution. Probably
@@ -24,7 +24,7 @@ fn test_bad_error_messages() {
     assert_snapshot!(compile(r###"
     from film
     group
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :3:5 ]
        │
@@ -44,7 +44,7 @@ fn test_bad_error_messages() {
 
     from employees
     filter f location
-    "#).unwrap_err(), @r"
+    "#).unwrap_err(), @"
     Error:
        ╭─[ :5:14 ]
        │
@@ -58,7 +58,7 @@ fn test_bad_error_messages() {
     assert_snapshot!(compile(r###"
     select tracks
     from artists
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :3:5 ]
        │
@@ -127,7 +127,7 @@ fn select_with_extra_fstr() {
     "#);
 }
 
-// See also test_error_messages::test_type_error_placement
+// See also sql::test_type_error_placement
 #[test]
 fn misplaced_type_error() {
     // This one should point at `foo` in `select (... foo)`
@@ -136,7 +136,7 @@ fn misplaced_type_error() {
     let foo = 123
     from t
     select (true && foo)
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :2:15 ]
        │
@@ -152,7 +152,7 @@ fn test_hint_missing_args() {
     assert_snapshot!(compile(r###"
     from film
     select {film_id, lag film_id}
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :3:22 ]
        │
@@ -169,7 +169,7 @@ fn test_hint_missing_args() {
 fn test_relation_literal_contains_literals() {
     assert_snapshot!(compile(r###"
     [{a=(1+1)}]
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :2:9 ]
        │
@@ -196,7 +196,7 @@ fn nested_groups() {
         }
       )
     )
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
         ╭─[ :9:9 ]
         │
@@ -213,7 +213,7 @@ fn nested_groups() {
 fn just_std() {
     assert_snapshot!(compile(r###"
     std
-    "###).unwrap_err(), @r"
+    "###).unwrap_err(), @"
     Error:
        ╭─[ :1:1 ]
        │
@@ -223,4 +223,43 @@ fn just_std() {
        │ ╰───────────── internal compiler error; tracked at https://github.com/PRQL/prql/issues/4474
     ───╯
     ");
+}
+
+#[test]
+fn interpolation_span_after_escapes_or_triple_quotes() {
+    // The label should point at `foo`, but the interpolation's spans are
+    // computed from the decoded string at a fixed `+ 2` offset from the token,
+    // so each escape sequence shifts it one column left and triple quotes two.
+    // https://github.com/PRQL/prql/issues/6396
+    assert_snapshot!(compile(r#"
+    from t
+    select {x}
+    derive {y = f"\t\t\t\t{foo}"}
+    "#).unwrap_err(), @r#"
+    Error:
+       ╭─[ :4:24 ]
+       │
+     4 │     derive {y = f"\t\t\t\t{foo}"}
+       │                        ─┬─
+       │                         ╰─── Unknown name `foo`
+       │
+       │ Help: available columns: t.x
+    ───╯
+    "#);
+
+    assert_snapshot!(compile(r#"
+    from t
+    select {x}
+    derive {y = s"""aaaa{foo}"""}
+    "#).unwrap_err(), @r#"
+    Error:
+       ╭─[ :4:24 ]
+       │
+     4 │     derive {y = s"""aaaa{foo}"""}
+       │                        ─┬─
+       │                         ╰─── Unknown name `foo`
+       │
+       │ Help: available columns: t.x
+    ───╯
+    "#);
 }

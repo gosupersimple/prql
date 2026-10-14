@@ -16,8 +16,8 @@ how the date or timestamp should be structured.
 
 <!-- prettier-ignore -->
 > [!NOTE]
-> For now the supported DBs are: BigQuery, Clickhouse, DuckDB, MySQL, MSSQL
-> and Postgres.
+> For now the supported DBs are: BigQuery, Clickhouse, DuckDB, MySQL, MSSQL,
+> Postgres and Redshift.
 
 ```prql
 prql target:sql.duckdb
@@ -64,7 +64,10 @@ The SQL output varies by dialect:
 
 ### `trunc`
 
-Truncates a date or timestamp to a given unit.
+Truncates a date or timestamp to a given unit. The unit is written as a string
+literal, unlike `date.diff`, which takes it as a bare keyword; which units are
+accepted follows the target database. The unit has to be known at compile time,
+so a column or expression in its place is an error.
 
 ```prql
 prql target:sql.postgres
@@ -73,6 +76,56 @@ from events
 select (event_time | date.trunc "day")
 
 ```
+
+Most dialects take the unit as a quoted first argument, but MSSQL and BigQuery
+each use their own form:
+
+| Dialect    | SQL output                        |
+| ---------- | --------------------------------- |
+| Generic    | `DATE_TRUNC('day', event_time)`   |
+| DuckDB     | `DATE_TRUNC('day', event_time)`   |
+| Postgres   | `DATE_TRUNC('day', event_time)`   |
+| MySQL      | `DATE_TRUNC('day', event_time)`   |
+| Clickhouse | `DATE_TRUNC('day', event_time)`   |
+| Snowflake  | `DATE_TRUNC('day', "event_time")` |
+| MSSQL      | `DATETRUNC(day, event_time)`      |
+| BigQuery   | `DATE_TRUNC(event_time, DAY)`     |
+
+<!-- prettier-ignore -->
+> [!NOTE]
+> SQLite has no date-truncation function, so `date.trunc` raises an error when
+> compiling for that dialect.
+
+### `diff`
+
+Returns `end` minus `start`, measured in `unit` — so `date.diff unit start end`
+is positive when `end` is later. The unit is written as a bare keyword, unlike
+`date.trunc`, which takes it as a string; which units are accepted follows the
+target database.
+
+```prql
+from events
+derive { days_open = (date.diff day start_date end_date) }
+```
+
+`date.diff` compiles to the target database's own date-difference function, so
+the exact rounding behavior — whether a partial unit counts — follows that
+database rather than being normalized by PRQL:
+
+| Dialect    | SQL output                                 |
+| ---------- | ------------------------------------------ |
+| Generic    | `DATEDIFF(day, start_date, end_date)`      |
+| DuckDB     | `datediff('day', start_date, end_date)`    |
+| MSSQL      | `DATEDIFF(day, start_date, end_date)`      |
+| MySQL      | `TIMESTAMPDIFF(day, start_date, end_date)` |
+| Clickhouse | `dateDiff('day', start_date, end_date)`    |
+| BigQuery   | `DATE_DIFF(end_date, start_date, day)`     |
+| Snowflake  | `DATEDIFF(day, "start_date", "end_date")`  |
+
+<!-- prettier-ignore -->
+> [!NOTE]
+> Postgres and SQLite have no `DATEDIFF` equivalent, so `date.diff` raises an
+> error when compiling for those dialects.
 
 ### Date & time format specifiers
 
@@ -92,7 +145,7 @@ Here is the list of the specifiers currently supported:
 | `%b`  | `Jul`                         | Abbreviated month name. Always 3 letters.                        |
 | `%B`  | `July`                        | Full month name                                                  |
 | `%d`  | `08`                          | Day number (01-31), zero-padded to 2 digits                      |
-| `%-d` | ` 8`                          | Day number (1-31)                                                |
+| `%-d` | `8`                           | Day number (1-31)                                                |
 | `%a`  | `Sun`                         | Abbreviated weekday name. Always 3 letters                       |
 | `%A`  | `Sunday`                      | Full weekday name                                                |
 | `%D`  | `07/08/01`                    | Month-day-year format. Same as `%m/%d/%y`                        |
@@ -101,11 +154,11 @@ Here is the list of the specifiers currently supported:
 |       |                               |                                                                  |
 |       |                               | **TIME SPECIFIERS:**                                             |
 | `%H`  | `00`                          | Hour number (00-23)                                              |
-| `%k`  | ` 0`                          | Same as `%H` but space-padded. Same as `%_H`.                    |
+| `%-H` | `0`                           | Hour number (0-23)                                               |
 | `%I`  | `12`                          | Hour number in 12-hour clocks (01--12), zero-padded to 2 digits. |
 | `%p`  | `AM`                          | `AM` or `PM` in 12-hour clocks.                                  |
 | `%M`  | `34`                          | Minute number (00-59), zero-padded to 2 digits.                  |
-| `%S`  | `60`                          | Second number (00-59), zero-padded to 2 digits.                  |
+| `%S`  | `60`                          | Second number (00-60), zero-padded to 2 digits.                  |
 | `%f`  | `264900`                      | Number of microseconds[^1] since last whole second               |
 | `%R`  | `00:34`                       | Hour-minute format. Same as `%H:%M`.                             |
 | `%T`  | `00:34:60`                    | Hour-minute-second format. Same as `%H:%M:%S`.                   |
@@ -119,5 +172,8 @@ Here is the list of the specifiers currently supported:
 | `%t`  |                               | Literal tab (`\t`).                                              |
 | `%n`  |                               | Literal newline (`\n`).                                          |
 | `%%`  |                               | Literal percent sign.                                            |
+
+Space-padded specifiers — chrono's `%_`-prefixed forms and their `%e` / `%k` /
+`%l` aliases — are not supported by any dialect.
 
 [^1]: This is different from chrono, for which `%f` represents nanoseconds

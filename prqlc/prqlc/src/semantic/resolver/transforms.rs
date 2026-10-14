@@ -99,42 +99,26 @@ impl Resolver<'_> {
 
                 let side = {
                     let span = side.span;
-                    let ident =
-                        side.clone()
-                            .try_cast(ExprKind::into_ident, Some("side"), "ident")?;
+                    let ident = side.clone().try_cast(
+                        ExprKind::into_literal,
+                        Some("`side`"),
+                        "inner, left, right or full",
+                    )?;
 
-                    // first try to match the raw ident string as a bare word
+                    // these must match the values of JoinSide defined in std.prql
                     match ident.to_string().as_str() {
-                        "inner" => JoinSide::Inner,
-                        "left" => JoinSide::Left,
-                        "right" => JoinSide::Right,
-                        "full" => JoinSide::Full,
+                        "\"inner\"" => JoinSide::Inner,
+                        "\"left\"" => JoinSide::Left,
+                        "\"right\"" => JoinSide::Right,
+                        "\"full\"" => JoinSide::Full,
 
-                        _ => {
-                            // if that fails, fold the ident and try treating the result as a literal
-                            // this allows the join side to be passed as a function parameter
-                            // NOTE: this is temporary, pending discussions and implementation, tracked in #4501
-                            let folded = self.fold_expr(side)?.try_cast(
-                                ExprKind::into_literal,
-                                Some("side"),
-                                "string literal",
-                            )?;
-
-                            match folded.to_string().as_str() {
-                                "\"inner\"" => JoinSide::Inner,
-                                "\"left\"" => JoinSide::Left,
-                                "\"right\"" => JoinSide::Right,
-                                "\"full\"" => JoinSide::Full,
-
-                                _ => {
-                                    return Err(Error::new(Reason::Expected {
-                                        who: Some("`side`".to_string()),
-                                        expected: "inner, left, right or full".to_string(),
-                                        found: folded.to_string(),
-                                    })
-                                    .with_span(span))
-                                }
-                            }
+                        val => {
+                            return Err(Error::new(Reason::Expected {
+                                who: Some("`side`".to_string()),
+                                expected: "inner, left, right or full".to_string(),
+                                found: val.to_string(),
+                            })
+                            .with_span(span))
                         }
                     }
                 };
@@ -237,8 +221,6 @@ impl Resolver<'_> {
                 } else {
                     (WindowKind::Rows, None, None)
                 };
-                // let start = Expr::new(start.map_or(Literal::Null, Literal::Integer));
-                // let end = Expr::new(end.map_or(Literal::Null, Literal::Integer));
                 let range = Range {
                     start: start.map(Literal::Integer).map(Expr::new).map(Box::new),
                     end: end.map(Literal::Integer).map(Expr::new).map(Box::new),
@@ -254,9 +236,65 @@ impl Resolver<'_> {
                 (transform_kind, tbl)
             }
             "append" => {
-                let [bottom, top] = unpack::<2>(func.args);
+                let [by, bottom, top] = unpack::<3>(func.args);
 
-                (TransformKind::Append(Box::new(bottom)), top)
+                let by_name = {
+                    let span = by.span;
+                    let ident = by.clone().try_cast(
+                        ExprKind::into_literal,
+                        Some("`by`"),
+                        "position or name",
+                    )?;
+
+                    match ident.to_string().as_str() {
+                        "\"position\"" => false,
+                        "\"name\"" => true,
+                        _ => {
+                            return Err(Error::new(Reason::Expected {
+                                who: Some("`by`".to_string()),
+                                expected: "position or name".to_string(),
+                                found: ident.to_string(),
+                            })
+                            .with_span(span))
+                        }
+                    }
+                };
+
+                // TODO: support database engine-level UNION ALL BY NAME in PR #6037
+                if by_name {
+                    // input validation for PRQL-native implementation
+                    for (name, rel) in [("top", top.clone()), ("bottom", bottom.clone())] {
+                        let lineage = rel.lineage.clone().ok_or_else(|| {
+                            Error::new(Reason::Expected {
+                                who: Some(format!("`{name}`")),
+                                expected: "relation".to_string(),
+                                found: write_pl(rel.clone()),
+                            })
+                            .with_span(rel.span)
+                        })?;
+
+                        lineage.columns.iter().try_for_each(|c| match c {
+                            LineageColumn::All { .. } => Err(Error::new(Reason::Simple(format!(
+                                "{name} input to append by:name must have all columns defined"
+                            )))
+                            .push_hint("try adding a select earlier in the pipeline")
+                            .with_span(rel.span)),
+                            LineageColumn::Single {
+                                name: None,
+                                target_name: None,
+                                ..
+                            } => Err(Error::new(Reason::Simple(format!(
+                                "{name} input to append by:name must not have any unnamed columns"
+                            )))
+                            .with_span(rel.span)),
+                            _ => Ok(()),
+                        })?;
+                    }
+
+                    return Ok(new_binop(bottom, &["std", "_append_by_name"], top));
+                } else {
+                    (TransformKind::Append(Box::new(bottom)), top)
+                }
             }
             "loop" => {
                 let [pipeline, tbl] = unpack::<2>(func.args);
@@ -303,18 +341,45 @@ impl Resolver<'_> {
                 .with_span(pattern.span));
             }
 
-            "tuple_every" => {
+            "tuple_reduce" => {
                 // yes, this is not a transform, but this is the most appropriate place for it
 
-                let [list] = unpack::<1>(func.args);
-                let list = list.kind.into_tuple().unwrap();
+                let [init, func, list] = unpack::<3>(func.args);
+                let list_items = list.kind.into_tuple().unwrap();
+                let num_items = list_items.len();
+                let mut list_iter = list_items.into_iter();
 
-                let mut res = None;
-                for item in list {
-                    res = maybe_binop(res, &["std", "and"], Some(item));
+                let mut res = init.clone();
+
+                if let ExprKind::Literal(Literal::String(init_val)) = &init.kind {
+                    if init_val == "__missing" {
+                        match num_items {
+                            0 => return Err(Error::new(Reason::Expected {
+                                who: Some("tuple".to_string()),
+                                expected:
+                                    "to have at least one entry when initial value is not provided"
+                                        .to_string(),
+                                found: "empty tuple".to_string(),
+                            })
+                            .with_span(list.span)
+                            .push_hint("try adding an initial:<value> parameter")),
+                            1 => {
+                                let item = list_iter.next().unwrap();
+                                return Ok(item);
+                            }
+                            _ => {
+                                res = list_iter.next().unwrap();
+                            }
+                        }
+                    }
                 }
-                let res =
-                    res.unwrap_or_else(|| Expr::new(ExprKind::Literal(Literal::Boolean(true))));
+
+                for item in list_iter {
+                    res = self.fold_expr(Expr::new(ExprKind::FuncCall(FuncCall::new_simple(
+                        func.clone(),
+                        vec![res, item],
+                    ))))?;
+                }
 
                 return Ok(res);
             }
@@ -328,12 +393,15 @@ impl Resolver<'_> {
                 let list_items = list_items
                     .into_iter()
                     .map(|item| {
-                        Expr::new(ExprKind::FuncCall(FuncCall::new_simple(
-                            func.clone(),
-                            vec![item],
-                        )))
+                        self.fold_expr(Expr {
+                            alias: item.alias.clone(),
+                            ..Expr::new(ExprKind::FuncCall(FuncCall::new_simple(
+                                func.clone(),
+                                vec![item],
+                            )))
+                        })
                     })
-                    .collect_vec();
+                    .collect::<Result<Vec<_>>>()?;
 
                 return Ok(Expr {
                     kind: ExprKind::Tuple(list_items),
@@ -354,6 +422,77 @@ impl Resolver<'_> {
                 }
 
                 return Ok(Expr::new(ExprKind::Tuple(res)));
+            }
+
+            "tuple_uniq" => {
+                let [take, list] = unpack::<2>(func.args);
+
+                let take_late = {
+                    let span = take.span;
+                    let ident = take.clone().try_cast(
+                        ExprKind::into_literal,
+                        Some("`take`"),
+                        "early or late",
+                    )?;
+
+                    match ident.to_string().as_str() {
+                        "\"early\"" => false,
+                        "\"late\"" => true,
+                        _ => {
+                            return Err(Error::new(Reason::Expected {
+                                who: Some("`take`".to_string()),
+                                expected: "early or late".to_string(),
+                                found: ident.to_string(),
+                            })
+                            .with_span(span))
+                        }
+                    }
+                };
+
+                let list_items = list.kind.into_tuple().unwrap();
+
+                log::trace!("tuple_uniq before: {list_items:#?}");
+
+                let mut list_names: Vec<String> = Vec::new();
+                let mut list_out: HashMap<String, Expr> = HashMap::new();
+
+                for item in list_items {
+                    let Some(name) = (match (&item.alias, &item.kind) {
+                        (Some(name), _) => Some(name.to_string()),
+                        (None, ExprKind::Ident(ident)) => Some(&ident.name).cloned(),
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+
+                    if !list_out.contains_key(&name.to_string()) {
+                        list_names.push(name.to_string());
+                    }
+
+                    if !list_out.contains_key(&name.to_string()) || take_late {
+                        list_out.insert(name.to_string(), item);
+                    }
+                }
+
+                let list_items = list_names
+                    .into_iter()
+                    .map(|name| list_out.get(&name).unwrap().clone())
+                    .collect();
+
+                log::trace!("tuple_uniq after: {list_items:#?}");
+
+                return Ok(Expr::new(ExprKind::Tuple(list_items)));
+            }
+
+            "tuple_reverse" => {
+                let [list] = unpack::<1>(func.args);
+                let list_items = list.kind.into_tuple().unwrap();
+
+                log::trace!("tuple_reverse: {list_items:#?}");
+
+                return Ok(Expr::new(ExprKind::Tuple(
+                    list_items.into_iter().rev().collect(),
+                )));
             }
 
             "_eq" => {
@@ -387,12 +526,12 @@ impl Resolver<'_> {
                 let res = {
                     let span = format.span;
                     let format = format
-                        .try_cast(ExprKind::into_ident, Some("format"), "ident")?
+                        .try_cast(ExprKind::into_literal, Some("`format`"), "csv or json")?
                         .to_string();
                     match format.as_str() {
-                        "csv" => from_text::parse_csv(&text)
+                        "\"csv\"" => from_text::parse_csv(&text)
                             .map_err(|r| Error::new_simple(r).with_span(span))?,
-                        "json" => from_text::parse_json(&text)
+                        "\"json\"" => from_text::parse_json(&text)
                             .map_err(|r| Error::new_simple(r).with_span(span))?,
 
                         _ => {
@@ -416,6 +555,7 @@ impl Resolver<'_> {
                     .map(|x| TyTupleField::Single(Some(x), None))
                     .collect();
 
+                let frame_ty = Ty::relation(columns.clone());
                 let frame =
                     self.declare_table_for_literal(expr_id, Some(columns), Some(input_name));
 
@@ -434,6 +574,7 @@ impl Resolver<'_> {
                 let res = Expr {
                     lineage: Some(frame),
                     id: text_expr.id,
+                    ty: Some(frame_ty),
                     ..res
                 };
                 return Ok(res);
@@ -516,6 +657,8 @@ impl Resolver<'_> {
         // In other words, I hope to make our type system powerful enough to express return
         // type of all std module functions.
 
+        let bad_type = |t| Error::new_assert(format!("unexpected type {t:#?}"));
+
         Ok(match transform_call.kind.as_ref() {
             TransformKind::Select { assigns } => assigns
                 .ty
@@ -526,7 +669,7 @@ impl Resolver<'_> {
                 let input = input.into_relation().unwrap();
 
                 let derived = assigns.ty.clone().unwrap();
-                let derived = derived.kind.into_tuple().unwrap();
+                let derived = derived.kind.into_tuple().map_err(bad_type)?;
 
                 Some(Ty::new(TyKind::Array(Some(Box::new(Ty::new(
                     ty_tuple_kind([input, derived].concat()),
@@ -545,8 +688,11 @@ impl Resolver<'_> {
                 let input = input.into_relation().unwrap();
 
                 let with_name = with.alias.clone();
+                let with_span = with.span;
                 let with = with.ty.clone().unwrap();
-                let with = with.kind.into_array().unwrap().unwrap();
+                let with = with.kind.into_array().map_err(bad_type)?.ok_or(
+                    Error::new_assert("no columns found in joining relation").with_span(with_span),
+                )?;
                 let with = TyTupleField::Single(with_name, Some(*with));
 
                 Some(Ty::new(TyKind::Array(Some(Box::new(Ty::new(
@@ -555,26 +701,38 @@ impl Resolver<'_> {
             }
             TransformKind::Group { pipeline, by } => {
                 let by = by.ty.clone().unwrap();
-                let by = by.kind.into_tuple().unwrap();
+                let by = by.kind.into_tuple().map_err(bad_type)?;
 
+                let pipeline_span = pipeline.span;
                 let pipeline = pipeline.ty.clone().unwrap();
-                let pipeline = pipeline.kind.into_function().unwrap().unwrap();
-                let pipeline = pipeline.return_ty.unwrap().into_relation().unwrap();
+                let pipeline = pipeline
+                    .kind
+                    .into_function()
+                    .map_err(bad_type)?
+                    .ok_or(Error::new_assert("expected function").with_span(pipeline_span))?;
+                let pipeline = pipeline.return_ty.unwrap().into_relation().ok_or(
+                    Error::new_assert("function must return relation").with_span(pipeline_span),
+                )?;
 
                 Some(Ty::new(TyKind::Array(Some(Box::new(Ty::new(
                     ty_tuple_kind([by, pipeline].concat()),
                 ))))))
             }
             TransformKind::Window { pipeline, .. } | TransformKind::Loop(pipeline) => {
+                let pipeline_span = pipeline.span;
                 let pipeline = pipeline.ty.clone().unwrap();
-                let pipeline = pipeline.kind.into_function().unwrap().unwrap();
+                let pipeline = pipeline
+                    .kind
+                    .into_function()
+                    .map_err(bad_type)?
+                    .ok_or(Error::new_assert("expected function").with_span(pipeline_span))?;
                 pipeline.return_ty.map(|x| *x)
             }
             TransformKind::Append(bottom) => {
                 let top = transform_call.input.ty.clone().unwrap();
                 let bottom = bottom.ty.clone().unwrap();
 
-                Some(type_intersection(top, bottom))
+                Some(type_intersection(top, bottom).with_span(transform_call.input.span)?)
             }
         })
     }
@@ -677,7 +835,8 @@ impl TransformCall {
 
         fn lineage_or_default(expr: &Expr) -> Result<Lineage> {
             expr.lineage.clone().ok_or_else(|| {
-                Error::new_simple("expected {expr:?} to have table type").with_span(expr.span)
+                Error::new_simple(format!("expected {expr:?} to have table type"))
+                    .with_span(expr.span)
             })
         }
 
@@ -703,7 +862,7 @@ impl TransformCall {
                 // pipeline's body is resolved, just use its type
                 let Func { body, .. } = pipeline.kind.as_func().unwrap().as_ref();
 
-                let partition_lin = lineage_or_default(body).unwrap();
+                let partition_lin = lineage_or_default(body)?;
                 lineage.columns.extend(partition_lin.columns);
 
                 log::debug!(".. type={lineage}");
@@ -713,7 +872,7 @@ impl TransformCall {
                 // pipeline's body is resolved, just use its type
                 let Func { body, .. } = pipeline.kind.as_func().unwrap().as_ref();
 
-                lineage_or_default(body).unwrap()
+                lineage_or_default(body)?
             }
             Aggregate { assigns } => {
                 let mut lineage = lineage_or_default(&self.input)?;
@@ -942,7 +1101,7 @@ impl Lineage {
 
         // special case: include a tuple
         if expr.ty.as_ref().is_some_and(|x| x.kind.is_tuple()) && expr.kind.is_ident() {
-            // this ident is a tuple, which means it much point to an input
+            // this ident is a tuple, which means it must point to an input
             let input_id = expr.target_id.unwrap();
 
             self.columns.push(LineageColumn::All {
@@ -1141,9 +1300,77 @@ mod from_text {
 
 #[cfg(test)]
 mod tests {
-    use insta::assert_yaml_snapshot;
+    use insta::{assert_snapshot, assert_yaml_snapshot};
 
     use crate::semantic::test::parse_resolve_and_lower;
+
+    // `infer_lineage` errors when an input expr has no lineage. The error
+    // message must interpolate the expr rather than emitting the literal
+    // placeholder `{expr:?}` — the message was built with `new_simple` on a
+    // plain string literal, so the placeholder was never substituted.
+    #[test]
+    fn test_infer_lineage_missing_lineage_message() {
+        use crate::ir::pl::{Expr, ExprKind, Literal, TransformCall, TransformKind, WindowFrame};
+
+        // An input with `lineage: None` (e.g. a non-relational expr) drives
+        // `lineage_or_default` down its error branch.
+        let call = TransformCall {
+            input: Box::new(Expr::new(ExprKind::Literal(Literal::Null))),
+            kind: Box::new(TransformKind::Select {
+                assigns: Box::new(Expr::new(ExprKind::Tuple(vec![]))),
+            }),
+            partition: None,
+            frame: WindowFrame::default(),
+            sort: vec![],
+        };
+
+        let err = call.infer_lineage().unwrap_err();
+        let msg = err.reason.to_string();
+        assert!(
+            !msg.contains("{expr:?}"),
+            "error message should interpolate the expr, got: {msg}"
+        );
+        assert!(msg.contains("to have table type"), "got: {msg}");
+    }
+
+    // `append` of relations with a different number of columns must produce a
+    // graceful error rather than panicking (was `todo!()` in
+    // `type_intersection`).
+    #[test]
+    fn test_append_different_column_count() {
+        assert_snapshot!(crate::tests::compile(
+            "from a | select {x, y} | append (from b | select {x})"
+        )
+        .unwrap_err(), @r"
+        Error:
+           ╭─[ :1:10 ]
+           │
+         1 │ from a | select {x, y} | append (from b | select {x})
+           │          ──────┬──────
+           │                ╰──────── cannot combine relations with different numbers of columns
+           │
+           │ Help: `append` requires both tables to have matching columns
+        ───╯
+        ");
+    }
+
+    // `append` of relations whose columns have incompatible types must also
+    // error rather than panic (the catch-all `todo!()` arm).
+    #[test]
+    fn test_append_incompatible_column_types() {
+        assert_snapshot!(crate::tests::compile(
+            "from a | select {x = 1} | append (from b | select {x = 1.0})"
+        )
+        .unwrap_err(), @r"
+        Error:
+           ╭─[ :1:10 ]
+           │
+         1 │ from a | select {x = 1} | append (from b | select {x = 1.0})
+           │          ───────┬──────
+           │                 ╰──────── cannot combine types `int` and `float`
+        ───╯
+        ");
+    }
 
     #[test]
     fn test_aggregate_positional_arg() {
@@ -1155,7 +1382,7 @@ mod tests {
         group invoice_no (
             take 1
         )
-        ").unwrap(), @r"
+        ").unwrap(), @"
         def:
           version: ~
           other: {}
@@ -1232,7 +1459,13 @@ mod tests {
         let (res, _) = ctx.find_main_rel(&[]).unwrap().clone();
         let expr = res.clone().into_relation_var().unwrap();
         let expr = super::super::test::erase_ids(*expr);
-        assert_yaml_snapshot!(expr);
+
+        // Spans from `std.prql` carry source id 0 (`STD_LIB_SOURCE_ID`); user
+        // sources start at 1. Filtering them keeps this snapshot stable when the
+        // stdlib shifts, without hiding spans from the query under test.
+        insta::with_settings!({ filters => vec![(r"\b0:\d+-\d+", "[std]")] }, {
+            assert_yaml_snapshot!(expr);
+        });
     }
 
     #[test]
@@ -1244,7 +1477,7 @@ mod tests {
         sort (-issued_at)
         sort {issued_at}
         sort {-issued_at}
-        ").unwrap(), @r"
+        ").unwrap(), @"
         def:
           version: ~
           other: {}

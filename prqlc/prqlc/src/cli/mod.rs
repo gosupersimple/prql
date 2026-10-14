@@ -5,6 +5,7 @@ use std::env;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::ops::Range;
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::str::FromStr;
@@ -168,6 +169,12 @@ enum Command {
     ListTargets,
 
     /// Language Server Protocol
+    //
+    // Only does anything when built with the `lsp` feature, which is off by
+    // default. The variant stays present without it so that the help text and
+    // the shell completions don't vary with the feature set. (Hence a `//`
+    // comment — a second doc-comment paragraph would render as clap long help,
+    // which the completion snapshots pick up.)
     #[command(hide = true)]
     Lsp,
 
@@ -179,7 +186,7 @@ enum Command {
     },
 }
 
-/// Commands for meant for debugging, prone to change
+/// Commands meant for debugging, prone to change
 #[derive(Subcommand, Debug, Clone)]
 enum DebugCommand {
     /// Parse, resolve & combine source with comments annotating relation type
@@ -343,6 +350,13 @@ impl Command {
                 Ok(_) => Ok(()),
                 Err(err) => Err(anyhow!(err)),
             },
+            // Without the feature there's no server to start. This has to be
+            // handled here rather than falling through to `run_io_command`,
+            // which has no `IoArgs` to work with and would panic.
+            #[cfg(not(feature = "lsp"))]
+            Command::Lsp => Err(anyhow!(
+                "`lsp` requires `prqlc` to be built with the `lsp` feature"
+            )),
             _ => self.run_io_command(),
         }
     }
@@ -356,7 +370,27 @@ impl Command {
         let (mut file_tree, main_path) = self.read_input()?;
 
         self.execute(&mut file_tree, &main_path)
-            .and_then(|buf| Ok(self.write_output(&buf)?))
+            .and_then(|buf| self.write_output(&buf))
+    }
+
+    /// The [`IoArgs`] of the commands that read input and write output.
+    ///
+    /// `None` for the commands that handle their own IO, which [`Self::run`]
+    /// dispatches before falling through to [`Self::run_io_command`].
+    fn io_args(&mut self) -> Option<&mut IoArgs> {
+        use Command::*;
+        match self {
+            Parse { io_args, .. }
+            | Lex { io_args, .. }
+            | Collect(io_args)
+            | Compile { io_args, .. }
+            | Debug(DebugCommand::Annotate(io_args) | DebugCommand::Lineage { io_args, .. })
+            | Experimental(
+                ExperimentalCommand::GenerateDocs { io_args, .. }
+                | ExperimentalCommand::Highlight(io_args),
+            ) => Some(io_args),
+            _ => None,
+        }
     }
 
     fn execute<'a>(&self, sources: &'a mut SourceTree, main_path: &'a str) -> Result<Vec<u8>> {
@@ -468,18 +502,24 @@ impl Command {
                     .with_signature_comment(*signature_comment)
                     .with_format(*format);
 
-                let res = prql_to_pl_tree(sources)
-                    .and_then(|pl| {
-                        pl_to_rq_tree(pl, &main_path, &[semantic::NS_DEFAULT_DB.to_string()])
-                    })
-                    .and_then(|rq| rq_to_sql(rq, &opts))
-                    .map_err(|e| e.composed(sources));
+                // catch any panic during compilation so that we can still produce a debug log
+                let res = panic::catch_unwind(|| {
+                    prql_to_pl_tree(sources)
+                        .and_then(|pl| {
+                            pl_to_rq_tree(pl, &main_path, &[semantic::NS_DEFAULT_DB.to_string()])
+                        })
+                        .and_then(|rq| rq_to_sql(rq, &opts))
+                        .map_err(|e| e.composed(sources))
+                });
 
                 if let Some(path) = debug_log {
                     write_log(path)?;
                 }
 
-                res?.as_bytes().to_vec()
+                match res {
+                    Ok(r) => r?.as_bytes().to_vec(),
+                    Err(payload) => panic::resume_unwind(payload),
+                }
             }
             _ => unreachable!("Other commands shouldn't reach `execute`"),
         })
@@ -490,19 +530,9 @@ impl Command {
         // `input`, rather than matching on them and grabbing `input` from
         // `self`? But possibly if everything moves to `io_args`, then this is
         // quite reasonable?
-        use Command::*;
-        let io_args = match self {
-            Parse { io_args, .. }
-            | Lex { io_args, .. }
-            | Collect(io_args)
-            | Compile { io_args, .. }
-            | Debug(DebugCommand::Annotate(io_args) | DebugCommand::Lineage { io_args, .. }) => {
-                io_args
-            }
-            Experimental(ExperimentalCommand::GenerateDocs { io_args, .. }) => io_args,
-            Experimental(ExperimentalCommand::Highlight(io_args)) => io_args,
-            _ => unreachable!(),
-        };
+        let io_args = self
+            .io_args()
+            .ok_or_else(|| anyhow!("internal error: command does not take input & output"))?;
         let input = &mut io_args.input;
 
         // Don't wait without a prompt when running `prqlc compile` —
@@ -525,23 +555,13 @@ impl Command {
         Ok((sources, main_path))
     }
 
-    fn write_output(&mut self, data: &[u8]) -> std::io::Result<()> {
-        use Command::{Collect, Compile, Debug, Experimental, Lex, Parse};
-        let mut output = match self {
-            Parse { io_args, .. }
-            | Lex { io_args, .. }
-            | Collect(io_args)
-            | Compile { io_args, .. }
-            | Debug(DebugCommand::Annotate(io_args) | DebugCommand::Lineage { io_args, .. }) => {
-                io_args.output.clone()
-            }
-            Experimental(ExperimentalCommand::GenerateDocs { io_args, .. }) => {
-                io_args.output.clone()
-            }
-            Experimental(ExperimentalCommand::Highlight(io_args)) => io_args.output.clone(),
-            _ => unreachable!(),
-        };
-        output.write_all(data)
+    fn write_output(&mut self, data: &[u8]) -> Result<()> {
+        let mut output = self
+            .io_args()
+            .ok_or_else(|| anyhow!("internal error: command does not take input & output"))?
+            .output
+            .clone();
+        Ok(output.write_all(data)?)
     }
 }
 
@@ -563,14 +583,23 @@ pub fn write_log(path: &std::path::Path) -> Result<()> {
             "debug log was started, but it cannot be found after compilation"
         ));
     };
+    // `BufWriter` flushes on drop but discards any error it meets there, so
+    // each branch flushes explicitly: without it a full disk truncates the log
+    // and the command still reports success.
     match path.extension().and_then(|s| s.to_str()) {
         Some("json") => {
-            let file = BufWriter::new(File::create(path)?);
-            serde_json::to_writer(file, &debug_log)?;
+            let mut file = BufWriter::new(File::create(path)?);
+            serde_json::to_writer(&mut file, &debug_log)?;
+            file.flush()?;
         }
         Some("html") => {
-            let file = BufWriter::new(File::create(path)?);
-            debug::render_log_to_html(file, &debug_log)?;
+            let mut file = BufWriter::new(File::create(path)?);
+            // The cause is interpolated rather than attached with
+            // `.context()`: `main` prints the error with `{error}`, anyhow's
+            // `Display`, which shows the outermost message alone.
+            debug::render_log_to_html(&mut file, &debug_log)
+                .and_then(|()| file.flush())
+                .map_err(|err| anyhow!("failed to write the debug log to {path:?}: {err}"))?;
         }
         _ => {
             return Err(anyhow!("unknown debug log format for file {path:?}"));
@@ -580,7 +609,7 @@ pub fn write_log(path: &std::path::Path) -> Result<()> {
 }
 
 fn drop_module_def(stmts: &mut Vec<pr::Stmt>, name: &str) {
-    stmts.retain(|x| x.kind.as_module_def().map_or(true, |m| m.name != name));
+    stmts.retain(|x| x.kind.as_module_def().is_none_or(|m| m.name != name));
 }
 
 fn read_files(input: &mut clio::ClioPath) -> Result<SourceTree> {
@@ -650,12 +679,49 @@ fn combine_prql_and_frames(source: &str, frames: Vec<(Option<pr::Span>, pl::Line
 }
 
 /// Unit tests for `prqlc`. Integration tests (where we call the actual binary)
-/// are in `prqlc/tests/test.rs`.
+/// are in `prqlc/prqlc/src/cli/test.rs`.
 #[cfg(test)]
 mod tests {
-    use insta::assert_snapshot;
+    use insta::{assert_debug_snapshot, assert_snapshot};
 
     use super::*;
+
+    #[test]
+    fn drop_named_module_def() {
+        let module = |name: &str| {
+            pr::Stmt::new(pr::StmtKind::ModuleDef(pr::ModuleDef {
+                name: name.to_string(),
+                stmts: Vec::new(),
+            }))
+        };
+        let mut stmts = vec![
+            module("std"),
+            module("user"),
+            pr::Stmt::new(pr::StmtKind::VarDef(pr::VarDef {
+                kind: pr::VarDefKind::Let,
+                name: "value".to_string(),
+                value: None,
+                ty: None,
+            })),
+        ];
+
+        drop_module_def(&mut stmts, "std");
+
+        let remaining = stmts
+            .iter()
+            .map(|stmt| {
+                stmt.kind
+                    .as_module_def()
+                    .map_or("<non-module>", |module| module.name.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_debug_snapshot!(remaining, @r#"
+        [
+            "user",
+            "<non-module>",
+        ]
+        "#);
+    }
 
     #[test]
     fn layouts() {
@@ -701,7 +767,7 @@ sort full
             "",
         );
 
-        assert_snapshot!(&result.unwrap_err().to_string(), @r"
+        assert_snapshot!(&result.unwrap_err().to_string(), @"
         Error:
            ╭─[ :1:1 ]
            │
@@ -735,8 +801,9 @@ sort full
             "main",
         )
         .unwrap();
-        assert_snapshot!(String::from_utf8(result).unwrap().trim(), @r"
-        WITH x AS (
+        assert_snapshot!(String::from_utf8(result).unwrap().trim(), @"
+        WITH
+        x AS (
           SELECT
             y,
             u
@@ -762,7 +829,7 @@ sort full
         )
         .unwrap();
 
-        assert_snapshot!(String::from_utf8(output).unwrap().trim(), @r"
+        assert_snapshot!(String::from_utf8(output).unwrap().trim(), @"
         name: Project
         stmts:
         - VarDef:
@@ -809,7 +876,7 @@ sort full
 
         // TODO: terser output; maybe serialize span as `0..4`? Remove the
         // `!Ident` complication?
-        assert_snapshot!(String::from_utf8(output).unwrap().trim(), @r"
+        assert_snapshot!(String::from_utf8(output).unwrap().trim(), @"
         - kind: Start
           span:
             start: 0
@@ -852,7 +919,7 @@ sort full
         )
         .unwrap();
 
-        assert_snapshot!(String::from_utf8(output).unwrap().trim(), @r"
+        assert_snapshot!(String::from_utf8(output).unwrap().trim(), @"
         - kind: Start
           span:
             start: 0

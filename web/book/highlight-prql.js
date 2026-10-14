@@ -9,25 +9,17 @@ Website: https://prql-lang.org/
 // Syntax highlighting for PRQL.
 
 // Keep consistent with
-// https://github.com/PRQL/prql/blob/main/web/website/themes/prql-theme/static/highlight/prql.js
+// https://github.com/PRQL/prql/blob/main/web/website/themes/prql-theme/static/plugins/highlight/prql.js
 // TODO: can we import one from the other at build time?
 
 // Inspired by [Pest's book](https://github.com/pest-parser/book)
-
-// mdBook exposes a minified version of highlight.js, so the language
-// definition objects below have abbreviated property names:
-//     "b"  => begin
-//     "e"  => end
-//     "c"  => contains
-//     "k"  => keywords
-//     "cN" => className
 
 // TODO:
 // - Can we represent strings with the actual rule of >= 3 quotes?
 // - Aliases seem a bit strong?
 // - Can we represent the inner s & f string items?
 
-formatting = function (hljs) {
+const formatting = function (hljs) {
   const BUILTIN_FUNCTIONS = [
     // Aggregate functions
     "any",
@@ -72,6 +64,8 @@ formatting = function (hljs) {
     "int32",
     "int64",
     "text",
+    "date",
+    "time",
     "timestamp",
   ];
 
@@ -90,7 +84,23 @@ formatting = function (hljs) {
     "window",
   ];
 
-  const KEYWORDS = ["let", "prql", "into", "case", "in", "as", "module"];
+  // Keep in sync with the lexer's `keyword` parser in
+  // prqlc/prqlc-parser/src/lexer/mod.rs. `in` and `as` are not lexer keywords,
+  // but are kept here as they read as such.
+  const KEYWORDS = [
+    "let",
+    "prql",
+    "into",
+    "case",
+    "in",
+    "as",
+    "module",
+    "type",
+    "enum",
+    "func",
+    "import",
+    "internal",
+  ];
 
   const CHAR_ESCAPE = {
     scope: "char.escape",
@@ -207,12 +217,6 @@ formatting = function (hljs) {
         ],
         contains: [
           CHAR_ESCAPE,
-          {
-            scope: "variable",
-            begin: "f",
-            end: '"',
-            // excludesEnd: true,
-          },
           // TODO: would be nice to have this be a different color, but I don't
           // think it's possible to have a subscope within the begin / end.
           // {

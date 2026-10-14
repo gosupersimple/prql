@@ -26,7 +26,7 @@ pub struct Flattener {
 
     /// Window affects transforms in it's inner pipeline.
     /// This means that this field has to be set before folding inner pipeline,
-    /// and unset after the folding.
+    /// and restored to the enclosing frame after the folding.
     window: WindowFrame,
 
     /// Window and group contain Closures in their inner pipelines.
@@ -129,11 +129,14 @@ impl PlFold for Flattener {
                         let param_id = table_param.name.parse::<usize>().unwrap();
 
                         self.replace_map.insert(param_id, tbl);
-                        self.window = WindowFrame { kind, range };
+                        // Restore the enclosing frame afterwards, so a nested
+                        // `window` doesn't reset the outer one.
+                        let prev_window =
+                            std::mem::replace(&mut self.window, WindowFrame { kind, range });
 
                         let pipeline = self.fold_expr(*pipeline.body)?;
 
-                        self.window = WindowFrame::default();
+                        self.window = prev_window;
                         self.replace_map.remove(&param_id);
 
                         return Ok(Expr {
@@ -142,7 +145,27 @@ impl PlFold for Flattener {
                             ..pipeline
                         });
                     }
-                    kind => (self.fold_expr(*t.input)?, fold_transform_kind(self, kind)?),
+                    kind => {
+                        let input = self.fold_expr(*t.input)?;
+
+                        // For join/append, folding the `with` sub-pipeline (which happens
+                        // inside `fold_transform_kind`) may set `self.sort` to the sub-pipeline's
+                        // sort. That sort references columns of the joined relation, which are not
+                        // in scope for downstream transforms in the outer pipeline. Per the PRQL
+                        // spec a join retains the left (input) side's order, so snapshot the
+                        // input's sort and restore it after folding the kind.
+                        let input_sort =
+                            matches!(kind, TransformKind::Join { .. } | TransformKind::Append(_))
+                                .then(|| self.sort.clone());
+
+                        let kind = fold_transform_kind(self, kind)?;
+
+                        if let Some(input_sort) = input_sort {
+                            self.sort = input_sort;
+                        }
+
+                        (input, kind)
+                    }
                 };
 
                 // In case we're appending or joining another pipeline, we do not want to apply the
@@ -175,5 +198,34 @@ impl PlFold for Flattener {
             kind => self.fold_expr_kind(kind)?,
         };
         Ok(expr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    #[test]
+    fn test_nested_window_restores_outer_frame() {
+        // `c` is computed after the inner `window` closes, so it should use the
+        // outer `rows:0..1` frame rather than an unbounded one.
+        let query = r#"
+        from t
+        window rows:0..1 (
+          window rows:-3..0 (derive {a = sum b})
+          derive {c = sum d}
+        )
+        "#;
+        assert_snapshot!(crate::tests::compile(query).unwrap(), @"
+        SELECT
+          *,
+          SUM(b) OVER (ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS a,
+          SUM(d) OVER (
+            ROWS BETWEEN CURRENT ROW
+            AND 1 FOLLOWING
+          ) AS c
+        FROM
+          t
+        ");
     }
 }

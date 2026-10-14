@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::iter::zip;
 
-use itertools::{Itertools, Position};
+use itertools::Itertools;
 
 use super::Resolver;
 use crate::ir::decl::{Decl, DeclKind, Module};
 use crate::ir::pl::*;
-use crate::pr::{Ty, TyFunc};
+use crate::pr::{Ty, TyFunc, TyKind};
 use crate::semantic::resolver::types;
 use crate::semantic::{NS_PARAM, NS_THAT, NS_THIS};
 use crate::Result;
@@ -123,10 +123,13 @@ impl Resolver<'_> {
             // Get the missing params (params that don't have args yet)
             let missing = inner_closure.params[inner_closure.args.len()..].to_vec();
 
-            // Create wrapper params and add references to them as args to the inner closure
+            // Create wrapper params and add references to them as args to the inner closure.
+            // The param names must be globally unique: nested partial applications share the
+            // NS_PARAM namespace, so a per-materialization index would collide and resolve to
+            // the wrong binding (issue #5978).
             let mut wrapper_params = Vec::with_capacity(missing.len());
-            for (i, param) in missing.iter().enumerate() {
-                let param_name = format!("_partial_{i}");
+            for param in missing.iter() {
+                let param_name = format!("_partial_{}", self.id.gen());
                 let substitute_arg = Expr::new(Ident::from_path(vec![
                     NS_PARAM.to_string(),
                     param_name.clone(),
@@ -200,8 +203,8 @@ impl Resolver<'_> {
         if let Some((name, _)) = named_args.into_iter().next() {
             // TODO: report all remaining named_args as separate errors
             return Err(Error::new_simple(format!(
-                "unknown named argument `{name}` to closure {:?}",
-                closure.name_hint
+                "unknown named argument `{name}` to function `{}`",
+                closure.as_debug_name()
             )));
         }
 
@@ -210,7 +213,7 @@ impl Resolver<'_> {
         Ok(closure)
     }
 
-    /// Resolves function arguments. Will return `Err(func)` is partial application is required.
+    /// Resolves function arguments. Will return `Err(func)` if partial application is required.
     fn resolve_function_args(
         &mut self,
         #[allow(clippy::boxed_local)] to_resolve: Box<Func>,
@@ -245,7 +248,7 @@ impl Resolver<'_> {
             // First, resolve all relational arguments
             let mut resolved_relations = Vec::new();
             for (pos, (index, (param, mut arg))) in relations.into_iter().with_position() {
-                let is_last = matches!(pos, Position::Last | Position::Only);
+                let is_last = pos.is_last;
 
                 // just fold the argument alone
                 if partial_application_position.is_none() {
@@ -302,16 +305,21 @@ impl Resolver<'_> {
                     // so they can be added to scope, before resolving subsequent elements.
 
                     let mut fields_new = Vec::with_capacity(fields.len());
+                    self.in_flight_tuple_aliases.push(Vec::new());
                     for field in fields {
-                        let field = self.fold_within_namespace(field, &param.name)?;
+                        let field = self.fold_within_namespace(field, param)?;
 
                         // add aliased columns into scope
                         if let Some(alias) = field.alias.clone() {
                             let id = field.id.unwrap();
-                            self.root_mod.module.insert_frame_col(NS_THIS, alias, id);
+                            self.root_mod
+                                .module
+                                .insert_frame_col(NS_THIS, alias.clone(), id);
+                            self.in_flight_tuple_aliases.last_mut().unwrap().push(alias);
                         }
                         fields_new.push(field);
                     }
+                    self.in_flight_tuple_aliases.pop();
 
                     // note that this tuple node has to be resolved itself
                     // (it's elements are already resolved and so their resolving
@@ -353,7 +361,7 @@ impl Resolver<'_> {
         param: &FuncParam,
         func_name: &Option<Ident>,
     ) -> Result<Result<Expr, Expr>> {
-        let mut arg = self.fold_within_namespace(arg, &param.name)?;
+        let mut arg = self.fold_within_namespace(arg, param)?;
 
         // don't validate types of unresolved exprs
         if arg.id.is_some() {
@@ -379,12 +387,41 @@ impl Resolver<'_> {
         Ok(Ok(arg))
     }
 
-    fn fold_within_namespace(&mut self, expr: Expr, param_name: &str) -> Result<Expr> {
-        let prev_namespace = self.default_namespace.take();
+    fn fold_within_namespace(&mut self, expr: Expr, param: &FuncParam) -> Result<Expr> {
+        let param_name = &param.name;
 
         if param_name.starts_with("noresolve.") {
             return Ok(expr);
-        } else if let Some((ns, _)) = param_name.split_once('.') {
+        }
+
+        if let Some(Ty {
+            name: Some(name),
+            kind: TyKind::Enum(enum_expr),
+            ..
+        }) = &param.ty
+        {
+            if let crate::pr::Expr {
+                kind: crate::pr::ExprKind::Tuple(enum_tuple),
+                ..
+            } = &**enum_expr
+            {
+                // function parameters with a declared enum type will
+                // automatically have that namespace module searched first
+                self.current_module_path.push(name.to_string());
+                let res = self.fold_expr(expr).push_hint(format!(
+                    "perhaps you meant one of: {}",
+                    enum_tuple
+                        .iter()
+                        .filter_map(|expr| expr.alias.clone())
+                        .join(", ")
+                ));
+                self.current_module_path.pop();
+                return res;
+            }
+        }
+
+        let prev_namespace = self.default_namespace.take();
+        if let Some((ns, _)) = param_name.split_once('.') {
             self.default_namespace = Some(ns.to_string());
         } else {
             self.default_namespace = None;
@@ -489,7 +526,7 @@ pub fn expr_of_func(func: Box<Func>, span: Option<Span>) -> Box<Expr> {
         return_ty: func
             .return_ty
             .clone()
-            .or_else(|| func.clone().body.ty)
+            .or_else(|| func.body.ty.clone())
             .map(Box::new),
         name_hint: func.name_hint.clone(),
     };

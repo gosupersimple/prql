@@ -7,38 +7,35 @@ info:
     - shell-completion
     - fish
   env:
-    CLICOLOR_FORCE: ""
     NO_COLOR: "1"
-    RUST_BACKTRACE: ""
-    RUST_LOG: ""
 ---
 success: true
 exit_code: 0
 ----- stdout -----
 # Print an optspec for argparse to handle cmd's options that are independent of any subcommand.
 function __fish_prqlc_global_optspecs
-	string join \n color= h/help V/version
+    string join \n color= h/help V/version
 end
 
 function __fish_prqlc_needs_command
-	# Figure out if the current invocation already has a command.
-	set -l cmd (commandline -opc)
-	set -e cmd[1]
-	argparse -s (__fish_prqlc_global_optspecs) -- $cmd 2>/dev/null
-	or return
-	if set -q argv[1]
-		# Also print the command, so this can be used to figure out what it is.
-		echo $argv[1]
-		return 1
-	end
-	return 0
+    # Figure out if the current invocation already has a command.
+    set -l cmd (commandline -opc)
+    set -e cmd[1]
+    argparse -s (__fish_prqlc_global_optspecs) -- $cmd 2>/dev/null
+    or return
+    if set -q argv[1]
+        # Also print the command, so this can be used to figure out what it is.
+        echo $argv[1]
+        return 1
+    end
+    return 0
 end
 
 function __fish_prqlc_using_subcommand
-	set -l cmd (__fish_prqlc_needs_command)
-	test -z "$cmd"
-	and return 1
-	contains -- $cmd[1] $argv
+    set -l cmd (__fish_prqlc_needs_command)
+    test -z "$cmd"
+    and return 1
+    contains -- $cmd[1] $argv
 end
 
 complete -c prqlc -n "__fish_prqlc_needs_command" -l color -d 'Controls when to use color' -r -f -a "auto\t''
@@ -50,7 +47,7 @@ complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "parse" -d 'Parse into P
 complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "lex" -d 'Lex into Lexer Representation'
 complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "fmt" -d 'Parse & generate PRQL code back'
 complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "collect" -d 'Parse the whole project and collect it into a single PRQL source file'
-complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "debug" -d 'Commands for meant for debugging, prone to change'
+complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "debug" -d 'Commands meant for debugging, prone to change'
 complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "experimental" -d 'Experimental commands are prone to change'
 complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "compile" -d 'Parse, resolve, lower into RQ & compile to SQL'
 complete -c prqlc -n "__fish_prqlc_needs_command" -f -a "watch" -d 'Watch a directory and compile .prql files to .sql files'
@@ -163,7 +160,7 @@ complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_su
 complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_subcommand_from parse lex fmt collect debug experimental compile watch list-targets lsp shell-completion help" -f -a "lex" -d 'Lex into Lexer Representation'
 complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_subcommand_from parse lex fmt collect debug experimental compile watch list-targets lsp shell-completion help" -f -a "fmt" -d 'Parse & generate PRQL code back'
 complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_subcommand_from parse lex fmt collect debug experimental compile watch list-targets lsp shell-completion help" -f -a "collect" -d 'Parse the whole project and collect it into a single PRQL source file'
-complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_subcommand_from parse lex fmt collect debug experimental compile watch list-targets lsp shell-completion help" -f -a "debug" -d 'Commands for meant for debugging, prone to change'
+complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_subcommand_from parse lex fmt collect debug experimental compile watch list-targets lsp shell-completion help" -f -a "debug" -d 'Commands meant for debugging, prone to change'
 complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_subcommand_from parse lex fmt collect debug experimental compile watch list-targets lsp shell-completion help" -f -a "experimental" -d 'Experimental commands are prone to change'
 complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_subcommand_from parse lex fmt collect debug experimental compile watch list-targets lsp shell-completion help" -f -a "compile" -d 'Parse, resolve, lower into RQ & compile to SQL'
 complete -c prqlc -n "__fish_prqlc_using_subcommand help; and not __fish_seen_subcommand_from parse lex fmt collect debug experimental compile watch list-targets lsp shell-completion help" -f -a "watch" -d 'Watch a directory and compile .prql files to .sql files'

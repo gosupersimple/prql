@@ -48,12 +48,12 @@ f-string of `f"average({col})"` would produce `"average(salary)"`, with quotes;
 while in PRQL, `s"average({col})"` produces `average(salary)`, without quotes.
 
 Note that interpolations can only contain plain variable names and not whole
-expression like Python.
+expressions like in Python.
 
 We can also use s-strings to produce a full table:
 
 ```prql
-from s"SELECT DISTINCT ON first_name, id, age FROM employees ORDER BY age ASC"
+from s"SELECT DISTINCT ON (first_name) first_name, id, age FROM employees ORDER BY first_name, age ASC"
 join s = s"SELECT * FROM salaries" (==id)
 ```
 
